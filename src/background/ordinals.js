@@ -51,12 +51,15 @@ async function offsetOf(id) {
 /**
  * What rides on each coin: Map 'txid:vout' -> { inscriptions: [{ id, offset }], runes: [{ name, amount }] }, for the
  * coins an indexer answered for (a coin it couldn't is missing from the map). At most `max` coins are looked up, four
- * at a time. With `offsets`, where each inscription sits in its coin is looked up too (a PSBT's review follows them).
+ * at a time, for `deadline` ms in all (what's still out by then is unknown; its answer is kept for next time). With
+ * `offsets`, where each inscription sits in its coin is looked up too (a PSBT's review follows them).
  */
-export async function contentsOf(coins, { max = 60, offsets = true } = {}) {
+export async function contentsOf(coins, { max = 60, offsets = true, deadline = 12_000 } = {}) {
   const ops = [...new Set(coins.map((c) => `${c.txid}:${c.vout}`))].slice(0, max);
   const out = new Map();
-  await pool(ops, 4, async (op) => {
+  let timer;
+  const late = new Promise((r) => { timer = setTimeout(r, deadline); });
+  const work = pool(ops, 4, async (op) => {
     const hit = cache.get(op);
     if (hit && Date.now() - hit.at < TTL) { out.set(op, hit.value); return; }
     let value = null;
@@ -68,7 +71,9 @@ export async function contentsOf(coins, { max = 60, offsets = true } = {}) {
     cache.set(op, { at: Date.now(), value });
     out.set(op, value);
   });
-  return out;
+  await Promise.race([work, late]);
+  clearTimeout(timer);
+  return new Map(out);
 }
 
 export const carries = (v) => !!v && (v.inscriptions.length > 0 || v.runes.length > 0);

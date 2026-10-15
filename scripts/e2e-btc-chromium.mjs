@@ -361,7 +361,7 @@ try {
     const built = buildPsbt({ inputs: [{ txid: 'b2'.repeat(32), vout: 0, value: 546n, script: TR_SCRIPT, sighashType: 0x83 }], outputs: [{ address: SEGWIT, value: 4_200_000n }] });
     onChain(built);
     const pending = ask('signPsbt', { psbt: built.b64, signInputs: { [TAPROOT]: [0] } });
-    const ap = await approvalPage(/what your signature fixes/);
+    const ap = await approvalPage(/your part/);
     await waitText(ap, /SINGLE\|ANYONECANPAY/);
     await check(ap, 'approve-psbt-listing');
     await answerIt(ap, false);
@@ -372,7 +372,7 @@ try {
     const built = buildPsbt({ inputs: [{ txid: txidOf('e2e lie'), vout: 0, value: 2_000_000n, claimValue: 20_000n, script: SEG_SCRIPT }], outputs: [{ address: merchant, value: 15_000n }] });
     onChain(built);
     const pending = ask('signPsbt', { psbt: built.b64 });
-    const ap = await approvalPage(/plum won't sign this/);
+    const ap = await approvalPage(/lies about input 0/);
     assert.equal(await ap.$eval('.answer .btn-go', (b) => b.disabled), true);
     await check(ap, 'approve-psbt-lie');
     await answerIt(ap, false);
