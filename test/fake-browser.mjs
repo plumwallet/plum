@@ -97,14 +97,16 @@ export function fakeChain(balances = {}) {
   const run = (b64) => {
     const t = readTx(b64decode(b64));
     const after = new Map(bal);
-    const get = (a) => after.get(a) ?? 0n;
+    const get = (a) => after.get(a) ?? BigInt(accounts.get(a)?.lamports ?? 0);
     after.set(t.keys[0], get(t.keys[0]) - 5000n * BigInt(t.required));
     let err = null;
     for (const ix of t.instructions) {
       const program = t.keys[ix.programIndex];
-      // Transfer (2), CreateAccount (0) and CreateAccountWithSeed (3) move lamports from the first account to the second
+      // Transfer (2), CreateAccount (0) and CreateAccountWithSeed (3) move lamports from the first account to the second,
+      // and so does the stake program's Withdraw (4)
       const kind = program === SYSTEM_PROGRAM && ix.data.length >= 12 ? readU32(ix.data, 0) : null;
-      const at = kind === 2 || kind === 0 ? 4 : kind === 3 ? 36 + 8 + Number(readU64(ix.data, 36)) : null;
+      const withdraw = program === 'Stake11111111111111111111111111111111111111' && ix.data.length >= 12 && readU32(ix.data, 0) === 4;
+      const at = kind === 2 || kind === 0 || withdraw ? 4 : kind === 3 ? 36 + 8 + Number(readU64(ix.data, 36)) : null;
       if (at != null && ix.data.length >= at + 8) {
         const [from, to] = ix.accounts.map((i) => t.keys[i]);
         const lamports = readU64(ix.data, at);
@@ -123,7 +125,7 @@ export function fakeChain(balances = {}) {
   const handlers = {
     getEpochInfo: () => ({ absoluteSlot: 4_320_100, blockHeight: 4_000_000, epoch: 10, slotIndex: 100, slotsInEpoch: 432_000, transactionCount: 1 }),
     getStakeMinimumDelegation: () => ({ context: { slot: 1 }, value: 1_000_000_000 }),
-    getMinimumBalanceForRentExemption: ([size]) => (128 + size) * 6960,
+    getMinimumBalanceForRentExemption: ([size]) => (128 + size) * 5080,
     getProgramAccounts: () => [],
     getInflationReward: ([addrs]) => addrs.map(() => null),
     getVoteAccounts: () => ({ current: [], delinquent: [] }),
@@ -142,8 +144,8 @@ export function fakeChain(balances = {}) {
         value: {
           err, logs: err ? ['Transfer: insufficient lamports'] : [], unitsConsumed: 450, fee: 5000 * t.required,
           accounts: (cfg.accounts?.addresses ?? []).map((a) => (afterSim.has(a) ? afterSim.get(a) : account(a, after))),
-          preBalances: t.keys.map((k) => Number(bal.get(k) ?? 0n)),
-          postBalances: t.keys.map((k) => Number(after.get(k) ?? 0n)),
+          preBalances: t.keys.map((k) => Number(bal.get(k) ?? BigInt(accounts.get(k)?.lamports ?? 0))),
+          postBalances: t.keys.map((k) => Number(after.get(k) ?? BigInt(accounts.get(k)?.lamports ?? 0))),
           preTokenBalances: [], postTokenBalances: [],
         },
       };

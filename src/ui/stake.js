@@ -142,11 +142,12 @@ async function pickValidator() {
 
 /** A validator in a line: its name (or address), what it takes, how it votes and how much it holds. */
 function validatorRow(v) {
-  const second = [short(v.vote, 4), v.skip != null ? `skips ${(v.skip * 100).toFixed(1)}%` : null, bigSol(v.stake)].filter(Boolean).join(' · ');
+  const second = [short(v.vote, 4), bigSol(v.stake), v.large ? 'big' : null].filter(Boolean).join(' · ');
+  const skips = v.skip != null ? `skips ${(v.skip * 100).toFixed(1)}%` : '';
   return h('button', { class: 'tk plain', type: 'button', onclick: () => stakeAmount(v) },
     h('span', { class: 'tk-n' }, h('b', null, who(v)), h('span', null, second)),
     h('span', { class: 'tk-v' }, h('b', { class: v.commission > 10 ? 't-gold' : '' }, `${v.commission}% fee`),
-      h('span', { class: v.suggested ? '' : 't-red' }, v.suggested ? (v.large ? 'big' : '') : v.why[0])));
+      h('span', { class: v.suggested ? '' : 't-red' }, v.suggested ? skips : v.why[0])));
 }
 
 /** How much to stake with a validator. */
@@ -221,11 +222,11 @@ function review(prep, { validator = null, back }) {
       kv('you unstake', sol(s.stake, 9)),
       v ? kv('from', who(v)) : null,
       kv('stake account', short(s.account, 6)),
-      kv('stops earning', `when this epoch ends (${about(s.endsIn)})`),
+      kv('stops earning', `in ${about(s.endsIn)}`),
       h('p', { class: 'fine' }, 'then withdraw it from your stake.')),
     withdraw: () => box('withdrawing', { tone: 'ink' },
       kv('you withdraw', sol(s.lamports, 9)),
-      kv('from', `stake account ${short(s.account, 6)}`),
+      kv('stake account', short(s.account, 6)),
       kv('to', 'your wallet'),
       h('p', { class: 'fine' }, 'everything in it comes back, and the stake account closes.')),
   }[s.action]();

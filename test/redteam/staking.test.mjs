@@ -38,7 +38,7 @@ test('staking: one transaction, one signer (you, who pays), nothing signed befor
   assert.ok(!built.signatures.some(isSigned));
   assert.equal(prep.summary.account, addressWithSeed(ME, stakeSeed(0), STAKE_PROGRAM));
   assert.equal(prep.preview.sim.ok, true);
-  assert.equal(prep.preview.sol, String(-(2_000_000_000 + 2_282_880) - Number(prep.preview.fee)), 'the stake and its rent leave your wallet, in the preview');
+  assert.equal(prep.preview.sol, String(-(2_000_000_000 + 1_666_240) - Number(prep.preview.fee)), 'the stake and its rent leave your wallet, in the preview');
   assert.ok(!prep.preview.warnings.some((w) => w.level === 'danger'), JSON.stringify(prep.preview.warnings));
   assert.ok(prep.preview.warnings.some((w) => /it stakes the stake account/.test(w.text)));
   const before = ctx.chain.sentTxs.length;
