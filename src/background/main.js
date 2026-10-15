@@ -648,6 +648,8 @@ async function handleRequest(origin, method, params, ctx) {
 
   if (method === 'signTransaction' || method === 'signAndSendTransaction') {
     const txs = decodeTxs(p.transactions, a);
+    const no = await HW.refusal('sol', a, 'sign', txs.map(b64decode));
+    if (no) throw fail(no);
     // the network is plum's, never the page's: a transaction previewed on one network and sent on another could do
     // anything (the same program can behave differently on each)
     const network = (await getSettings()).network;

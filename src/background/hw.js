@@ -10,6 +10,7 @@ import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { base58Decode, base58Encode } from '../shared/base58.js';
 import { equal, hex } from '../shared/bytes.js';
+import { readTx } from '../shared/tx.js';
 import * as B from './btc.js';
 import * as E from './eth.js';
 import { LedgerError } from './ledger/apdu.js';
@@ -306,6 +307,9 @@ export async function refusal(chain, account, kind, bytes = null) {
   if (kind === 'signIn') return "a Ledger can't sign Sign In With Solana: its Solana app signs off-chain messages in a wrapper the site wouldn't accept. Sign in with another wallet, or ask the site for a message to sign.";
   if (kind === 'message') {
     try { LS.offchainMessage(bytes, new Uint8Array(32)); } catch (e) { return e.message; }
+  }
+  if (kind === 'sign' && bytes.some((b) => readTx(b).version === 1)) {
+    return "your Ledger's Solana app signs legacy and v0 transactions only, and this site sent a v1 transaction: use another wallet for it, or ask the site for a v0 one";
   }
   return null;
 }

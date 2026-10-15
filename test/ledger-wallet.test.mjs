@@ -12,7 +12,7 @@ import { Transaction } from '@solana/web3.js';
 import { parseTransaction, recoverMessageAddress, recoverTransactionAddress, recoverTypedDataAddress } from 'viem';
 import { base58Encode } from '../src/shared/base58.js';
 import { b64decode, concat, hex, u32le, u64le } from '../src/shared/bytes.js';
-import { readTx } from '../src/shared/tx.js';
+import { compileV1, ix, readTx, unsignedTx } from '../src/shared/tx.js';
 import * as B from '../src/background/btc.js';
 import * as E from '../src/background/eth.js';
 import { addressOf, hash160, secretAt, seedOf } from '../src/background/keys.js';
@@ -141,6 +141,16 @@ test('rejecting in plum while the Ledger waits stops the device, and the site ge
   assert.equal((await answer).error.code, 4001);
   assert.match((await working).error, /rejected it in plum/);
   dev.decide = 'approve';
+});
+
+test("a site's v1 Solana transaction is refused for a Ledger wallet before it reaches the window", async () => {
+  const page = await T.connectSite('https://v1.example.org');
+  const message = compileV1({ payer: L.sol, blockhash: base58Encode(new Uint8Array(32).fill(7)), instructions: [ix.transfer(L.sol, base58Encode(new Uint8Array(32).fill(8)), 5n)], config: { computeUnitLimit: 300, priorityFee: 0n } });
+  const reviews = dev.reviews;
+  const r = await page.request('signTransaction', { account: L.sol, transactions: [Buffer.from(unsignedTx(message)).toString('base64')] });
+  assert.match(r.error.message, /legacy and v0 transactions only/);
+  assert.equal(T._test.pending.size, 0);
+  assert.equal(dev.reviews, reviews);
 });
 
 test('a Solana message is signed on the Ledger as an off-chain message; Sign In With Solana is refused plainly', async () => {
