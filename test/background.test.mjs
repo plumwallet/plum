@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Keypair, SystemProgram, Transaction } from '@solana/web3.js';
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js';
 import { Transaction as BtcTx, address as btcAddress } from 'bitcoinjs-lib';
 import { encodeFunctionData, keccak256, parseTransaction, recoverMessageAddress, recoverTransactionAddress, recoverTypedDataAddress } from 'viem';
 import { base58Decode } from '../src/shared/base58.js';
@@ -370,7 +370,9 @@ test('private keys: Solana, Ethereum and Bitcoin, told apart by their shape, eac
   const ethInfo = await ok('checkKey', { secret: ethHex });
   assert.equal(ethInfo.chain, 'eth');
   assert.equal(ethInfo.address, addressOf('eth', ethKey));
-  assert.deepEqual(await ok('checkKey', { secret: wif }), { chain: 'btc', address: addressOf('btc', btcKey) });
+  // a Bitcoin key opens a bc1q address and, on BIP-86's key path, a bc1p one: both are shown before it's imported
+  const { taprootAddressOf } = await import('../src/background/taproot.js');
+  assert.deepEqual(await ok('checkKey', { secret: wif }), { chain: 'btc', address: addressOf('btc', btcKey), taproot: taprootAddressOf(btcKey) });
   assert.match(await err('checkKey', { secret: 'not a key at all' }), /paste a Solana key/);
 
   await ok('importKey', { secret: JSON.stringify([...sol.secretKey]), name: 'hot', icon: 'frog' });
@@ -382,6 +384,7 @@ test('private keys: Solana, Ethereum and Bitcoin, told apart by their shape, eac
   assert.deepEqual(Object.keys(byName.hot.chains), ['sol']);
   assert.deepEqual(Object.keys(byName.metamask.chains), ['eth']);
   assert.deepEqual(Object.keys(byName.electrum.chains), ['btc']);
+  assert.deepEqual(byName.electrum.chains.btc.taproot, { address: taprootAddressOf(btcKey), path: null, publicKey: Buffer.from(schnorr.getPublicKey(btcKey)).toString('hex') });
   assert.equal(byName.hot.icon, 'frog');
   assert.equal(await err('checkKey', { secret: ethHex }), 'that wallet is already in plum');
   // exports give each key back in its chain's own format, after the password

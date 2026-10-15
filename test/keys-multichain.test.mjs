@@ -15,7 +15,7 @@ import { base58Encode } from '../src/shared/base58.js';
 import { hex } from '../src/shared/bytes.js';
 import {
   CHAINS, SCHEMES, addressOf, btcAddressOfPublicKey, btcPublicKey, checksumEth, ethAddressOfPublicKey, exportPrivateKey,
-  parsePrivateKey, schemePaths, secretAt, seedOf, signBtcDigest, signEthDigest, validPath,
+  parsePrivateKey, schemePaths, secretAt, seedOf, signBtcDigest, signEthDigest, taprootPath, validPath,
 } from '../src/background/keys.js';
 
 const ABANDON = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -260,8 +260,11 @@ test('validPath accepts exactly the paths of the schemes, and secretAt refuses e
     for (const n of [0, 1, 9, 10, 123_456_789, 999_999_999]) {
       if (scheme === 'cli' && n) continue;
       for (const [chain, path] of Object.entries(schemePaths(scheme, n))) assert.equal(validPath(chain, path), true, `${chain} ${path}`);
+      if (taprootPath(scheme, n)) assert.equal(validPath('btc', taprootPath(scheme, n)), true, `taproot ${n}`);
     }
   }
+  assert.equal(taprootPath('bip44', 0), undefined);
+  assert.equal(taprootPath('cli', 0), undefined);
   const seed = seedOf(ABANDON);
   const refused = [
     ['eth', "m/44'/60'/0'/0"], ['eth', "m/44'/60'/0'/0/0/0"], ['eth', "m/44'/60'/2'/0/0"], ['eth', "m/44'/60'/0'/1/0"],
@@ -271,7 +274,8 @@ test('validPath accepts exactly the paths of the schemes, and secretAt refuses e
     ['eth', "m/44'/60'/0'/0/0x1"], ['eth', "m/44'/60'/0'/0/٣"], ['eth', null], ['eth', undefined], ['eth', 0], ['eth', ["m/44'/60'/0'/0/0"]],
     ['eth', { toString: () => "m/44'/60'/0'/0/0" }], ['eth', "m/44'/501'/0'/0'"],
     ['btc', "m/84'/0'/0'/1/0"], ['btc', "m/84'/1'/0'/0/0"], ['btc', "m/84'/0'/1'/0/0"], ['btc', "m/44'/0'/0'/0/0"],
-    ['btc', "m/49'/0'/0'/0/0"], ['btc', "m/86'/0'/0'/0/0"], ['btc', "m/84'/0'/0'/0/0'"], ['btc', null], ['btc', "m/44'/60'/0'/0/0"],
+    ['btc', "m/49'/0'/0'/0/0"], ['btc', "m/86'/0'/0'/1/0"], ['btc', "m/86'/0'/1'/0/0"], ['btc', "m/86'/1'/0'/0/0"], ['btc', "m/85'/0'/0'/0/0"],
+    ['btc', "m/84'/0'/0'/0/0'"], ['btc', null], ['btc', "m/44'/60'/0'/0/0"],
     ['sol', "m/44'/501'/0'/0"], ['sol', "m/44'/501'/0'/1'"], ['sol', "m/44'/501'/0"], ['sol', "m/44'/501'"], ['sol', "m/44'/501'/0'/0'/0'"],
     ['sol', "m/44'/60'/0'/0'"], ['sol', ''], ['sol', undefined], ['sol', "m/44'/501'/1234567890'/0'"],
     ['doge', "m/44'/3'/0'/0/0"], [undefined, "m/44'/60'/0'/0/0"], ['ETH', "m/44'/60'/0'/0/0"],

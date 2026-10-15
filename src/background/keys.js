@@ -6,6 +6,7 @@
 //   Solana    m/44'/501'/n'/0'   SLIP-0010 ed25519 (Phantom, Solflare, Backpack)
 //   Ethereum  m/44'/60'/0'/0/n   BIP-32 secp256k1 (Phantom, MetaMask, Rabby, Trust)
 //   Bitcoin   m/84'/0'/0'/0/n    BIP-84 native segwit, bc1q... (Phantom; a BIP-84 wallet's receive addresses)
+//             m/86'/0'/0'/0/n    BIP-86 taproot, bc1p..., beside it (Phantom; a BIP-86 wallet's receive addresses)
 // Phantom's older grouping (bip44: Solana m/44'/501'/n', Ethereum m/44'/60'/1'/0/n) and the Solana CLI's no-path key
 // are found on import when they've been used.
 import { ed25519 } from '@noble/curves/ed25519.js';
@@ -46,6 +47,10 @@ export const SCHEMES = {
   cli: { sol: () => null },
 };
 
+/** The taproot path of wallet n of a scheme: plum's own only (Phantom's older grouping and the CLI key have no
+ * Bitcoin). */
+export const taprootPath = (scheme, n) => (scheme === 'bip44change' ? `m/86'/0'/0'/0/${n}` : undefined);
+
 /** Is this one of plum's derivations? (Own names only: "toString" is not a scheme.) */
 export const isScheme = (scheme) => typeof scheme === 'string' && Object.hasOwn(SCHEMES, scheme);
 
@@ -59,7 +64,7 @@ export function schemePaths(scheme, n) {
 const PATH_RE = {
   sol: /^m\/44'\/501'\/\d{1,9}'(\/0')?$/,
   eth: /^m\/44'\/60'\/[01]'\/0\/\d{1,9}$/,
-  btc: /^m\/84'\/0'\/0'\/0\/\d{1,9}$/,
+  btc: /^m\/8[46]'\/0'\/0'\/0\/\d{1,9}$/,
 };
 export const validPath = (chain, path) => (chain === 'sol' && path === null) || (typeof path === 'string' && Object.hasOwn(PATH_RE, chain) && PATH_RE[chain].test(path));
 
@@ -164,6 +169,12 @@ export function signEthDigest(digest, secret) {
 export function signBtcDigest(digest, secret) {
   if (!(digest instanceof Uint8Array) || digest.length !== 32) throw new Error('a Bitcoin signature is over a 32-byte hash');
   return secp256k1.sign(digest, secret, { prehash: false, format: 'der' });
+}
+
+/** Bitcoin's legacy signed messages: a recoverable signature over a 32-byte hash, { recovery, r, s } (low s, RFC 6979). */
+export function signBtcCompact(digest, secret) {
+  const { yParity, r, s } = signEthDigest(digest, secret);
+  return { recovery: yParity, r, s };
 }
 
 /* ------------------------------------------------------------ private keys pasted in */

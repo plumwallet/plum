@@ -3,15 +3,16 @@
 // Ethereum and Bitcoin. Private keys you import sit in an account of their own ("imported keys"), one wallet each, on
 // the chain the key is for. Secrets never leave this file except as signatures, or as an export you asked for with
 // your password.
-import { b64decode, b64encode, wipe } from '../shared/bytes.js';
+import { b64decode, b64encode, hex, wipe } from '../shared/bytes.js';
 import { ext } from '../shared/ext.js';
 import { ICON_IDS, cleanIcon } from '../shared/icons.js';
 import { cleanLine } from '../shared/text.js';
 import {
   CHAINS, addressOf, btcPublicKey, exportPrivateKey, isMnemonic, isScheme, newMnemonic, normalizeMnemonic, parsePrivateKey,
-  schemePaths, secretAt, seedOf, signBtcDigest, signEthDigest, signSol, validPath,
+  schemePaths, secretAt, seedOf, signBtcCompact, signBtcDigest, signEthDigest, signSol, taprootPath, validPath,
 } from './keys.js';
 import { getSettings, local, session } from './store.js';
+import { internalKey, signKeyPath, taprootAddressOf } from './taproot.js';
 import { changePassword as rewrap, createVault, passwordOpens, readVault, unlockVault, writeVault } from './vault.js';
 
 export const LOCK_ALARM = 'plum-autolock';
@@ -29,7 +30,8 @@ const fail = (message, code) => Object.assign(new Error(message), code ? { code 
  *
  *  accounts  [{ id, kind: 'phrase' | 'keys', name, words: 12 | 24 | null, backedUp, created }]
  *  wallets   [{ id, account, name, icon, scheme: 'bip44change' | 'bip44' | 'cli' | null, index,
- *               chains: { sol?: { address, path }, eth?: {...}, btc?: {...} } }]
+ *               chains: { sol?: { address, path }, eth?: {...}, btc?: { address, path, publicKey,
+ *               taproot: { address, path, publicKey } } } }]
  *  active    the wallet you're in
  *  vault     sealed: { v: 2, phrases: { accountId: mnemonic }, keys: { walletId: { chain, secret } } }
  *
@@ -246,6 +248,15 @@ function checkPicks(picks) {
   });
 }
 
+/** A wallet's Bitcoin side: its native segwit address and, beside it, its taproot one (the phrase's BIP-86 key, or an
+ * imported key itself), each with the public key sites build transactions for (taproot's is the x-only internal key). */
+function btcChain(secret, path, trSecret, trPath) {
+  return {
+    address: addressOf('btc', secret), path, publicKey: hex(btcPublicKey(secret)),
+    taproot: { address: taprootAddressOf(trSecret), path: trPath, publicKey: hex(internalKey(trSecret)) },
+  };
+}
+
 /** The wallet records for picks of a phrase (addresses from its seed). */
 function walletsFor(seed, accountId, picks, { names = [], icons = [] } = {}) {
   return picks.map((p, i) => {
@@ -253,7 +264,11 @@ function walletsFor(seed, accountId, picks, { names = [], icons = [] } = {}) {
     const chains = {};
     for (const [chain, path] of Object.entries(paths)) {
       const secret = secretAt(seed, chain, path);
-      chains[chain] = { address: addressOf(chain, secret), path };
+      if (chain === 'btc') {
+        const tr = secretAt(seed, 'btc', taprootPath(p.scheme, p.index));
+        chains.btc = btcChain(secret, path, tr, taprootPath(p.scheme, p.index));
+        wipe(tr);
+      } else chains[chain] = { address: addressOf(chain, secret), path };
       wipe(secret);
     }
     return { id: newId(), account: accountId, name: names[i], icon: icons[i] ?? null, scheme: p.scheme, index: p.index, chains };
@@ -371,9 +386,10 @@ export async function addWallet(accountId, { name, icon } = {}) {
 export async function keyInfo(secret) {
   const { chain, secret: key } = parsePrivateKey(secret);
   const address = addressOf(chain, key);
+  const taproot = chain === 'btc' ? taprootAddressOf(key) : undefined;
   wipe(key);
   if ((await wallets()).some((w) => w.chains[chain]?.address === address)) throw fail('that wallet is already in plum');
-  return { chain, address };
+  return { chain, address, taproot };
 }
 
 /** A private key as a wallet of its own (in "imported keys"): a new vault holding it, or added to the open one. */
@@ -382,7 +398,7 @@ export async function importKey({ password, secret, name, icon }) {
   const address = addressOf(chain, key);
   const list = await wallets();
   if (list.some((w) => w.chains[chain]?.address === address)) { wipe(key); throw fail('that wallet is already in plum'); }
-  const wallet = { id: newId(), account: KEYS, name: cleanName(name) || nextName(list.filter((w) => w.account === KEYS).map((w) => w.name), 'imported'), icon: iconsFor(1, icon, list.map((w) => w.icon))[0], scheme: null, index: null, chains: { [chain]: { address, path: null } } };
+  const wallet = { id: newId(), account: KEYS, name: cleanName(name) || nextName(list.filter((w) => w.account === KEYS).map((w) => w.name), 'imported'), icon: iconsFor(1, icon, list.map((w) => w.icon))[0], scheme: null, index: null, chains: { [chain]: chain === 'btc' ? btcChain(key, null, key, null) : { address, path: null } } };
   const entry = { chain, secret: b64encode(key) };
   wipe(key);
   const keysAccount = { id: KEYS, kind: 'keys', name: 'imported keys', words: null, backedUp: true, created: Date.now() };
@@ -495,6 +511,21 @@ function pathOf(w, chain) {
   return p === undefined || !validPath(chain, p) ? undefined : p;
 }
 
+/** A phrase wallet's taproot path (BIP-86, beside its m/84' one), worked out like pathOf. */
+const taprootPathOf = (w) => (pathOf(w, 'btc') === undefined ? undefined : taprootPath(w.scheme, w.index));
+
+/** A wallet's Bitcoin side from its segwit secret: the taproot key is the phrase's BIP-86 one, or an imported key
+ * itself. */
+function btcFor(o, w, secret, path) {
+  if (w.account === KEYS) return btcChain(secret, null, secret, null);
+  const trPath = taprootPathOf(w);
+  if (!trPath) return { address: addressOf('btc', secret), path, publicKey: hex(btcPublicKey(secret)) };
+  const tr = secretAt(seedFor(o, w.account), 'btc', trPath);
+  try { return btcChain(secret, path, tr, trPath); } finally { wipe(tr); }
+}
+const sameBtc = (a, b) => !!b && a.address === b.address && a.path === b.path && a.publicKey === b.publicKey
+  && a.taproot?.address === b.taproot?.address && a.taproot?.path === b.taproot?.path && a.taproot?.publicKey === b.taproot?.publicKey;
+
 /** The secret behind a wallet's address on a chain. With `trust`, it's rebuilt from the vault without checking the
  * address on disk (the unlock check uses that to put a tampered address right). */
 async function secretOf(w, chain, { trust = false } = {}) {
@@ -551,11 +582,11 @@ async function verifyWallets() {
       let secret;
       try { secret = CHAINS.includes(chain) ? await secretOf({ ...w, chains: { [chain]: w.chains?.[chain] ?? {} } }, chain, { trust: true }) : null; } catch { secret = null; }
       if (!secret) { changed = true; continue; }
-      const real = addressOf(chain, secret);
-      wipe(secret);
       const path = w.account === KEYS ? null : pathOf(w, chain);
-      if (real !== w.chains?.[chain]?.address || path !== w.chains?.[chain]?.path) changed = true;
-      chains[chain] = { address: real, path };
+      const rec = chain === 'btc' ? btcFor(o, w, secret, path) : { address: addressOf(chain, secret), path };
+      wipe(secret);
+      if (chain === 'btc' ? !sameBtc(rec, w.chains?.btc) : rec.address !== w.chains?.[chain]?.address || path !== w.chains?.[chain]?.path) changed = true;
+      chains[chain] = rec;
     }
     if (Object.keys(chains).length) fixed.push({ ...w, chains });
     else changed = true;
@@ -613,6 +644,33 @@ export async function signEthAs(address, digest) {
 export async function signBtcAs(address, digests) {
   const secret = await secretOf(await walletFor('btc', address), 'btc');
   try { return { publicKey: btcPublicKey(secret), signatures: digests.map((d) => signBtcDigest(d, secret)) }; } finally { wipe(secret); await touch(); }
+}
+
+/** The key behind one of your Bitcoin addresses (bc1q or bc1p), checked against the address on disk. */
+async function btcKeyFor(address) {
+  const w = (await wallets()).find((x) => x.chains.btc?.address === address || x.chains.btc?.taproot?.address === address);
+  if (!w || typeof address !== 'string') throw fail("that address isn't one of your wallets");
+  if (w.chains.btc.address === address) return { taproot: false, secret: await secretOf(w, 'btc') };
+  const o = await requireOpen();
+  const trPath = taprootPathOf(w);
+  const secret = w.account === KEYS ? await secretOf(w, 'btc') : trPath ? secretAt(seedFor(o, w.account), 'btc', trPath) : null;
+  if (!secret) throw fail('this wallet asks for a derivation plum does not use');
+  if (taprootAddressOf(secret) !== address) { wipe(secret); throw fail("this wallet doesn't match its recovery phrase"); }
+  return { taproot: true, secret };
+}
+
+/**
+ * Sign Bitcoin signature hashes with the key behind one of your addresses: ECDSA (DER, low s) and the public key for a
+ * bc1q address; BIP-340 with the BIP-86 tweaked key for a bc1p one ({ outputKey, signatures }). With `compact`, 65-byte
+ * recoverable ECDSA signatures by that address's own key instead (Bitcoin's legacy signed messages).
+ */
+export async function signBitcoinAs(address, digests, { compact = false } = {}) {
+  const { taproot, secret } = await btcKeyFor(address);
+  try {
+    if (compact) return { publicKey: btcPublicKey(secret), signatures: digests.map((d) => signBtcCompact(d, secret)) };
+    if (taproot) return signKeyPath(digests, secret);
+    return { publicKey: btcPublicKey(secret), signatures: digests.map((d) => signBtcDigest(d, secret)) };
+  } finally { wipe(secret); await touch(); }
 }
 
 /** A wallet's private key on one chain, after your password. */
