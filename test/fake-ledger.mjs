@@ -2,14 +2,17 @@
 // sends the way the real apps do (plum's encodings are checked against the real apps in Speculos, see
 // scripts/ledger-speculos.mjs; this one is for driving plum's own logic). Its keys come from a recovery phrase. It can
 // be unplugged, locked, showing another app, made to wait for a button press, or made to lie (`lie` hooks).
-import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { HDKey } from '@scure/bip32';
 import { base58Decode } from '../src/shared/base58.js';
 import { concat, hex, utf8 } from '../src/shared/bytes.js';
 import { addressOf, secretAt, seedOf, signSol } from '../src/background/keys.js';
 import { LedgerError } from '../src/background/ledger/apdu.js';
+import { legacyDigest } from '../src/background/bip322.js';
 import { personalDigest } from '../src/background/eth.js';
+import { policyId, taprootPolicy } from '../src/background/ledger/bitcoin.js';
+import { signKeyPath, taprootAddressOf } from '../src/background/taproot.js';
 
 export const ABANDON = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const HARD = 0x80000000;
@@ -141,6 +144,9 @@ export function fakeLedger({ mnemonic = ABANDON, app = 'Solana' } = {}) {
   }
 
   const btcNode = (path) => root.derive(path);
+  // the two default policies it knows, by their ids: native segwit (m/84') and taproot (m/86')
+  const fpr = root.fingerprint.toString(16).padStart(8, '0');
+  const TAPROOT_ID = hex(policyId(taprootPolicy(fpr, root.derive("m/86'/0'/0'").publicExtendedKey)));
   async function bitcoin(cla, ins, p1, p2, data) {
     if (cla === 0xf8) {
       // CONTINUE: the next thing it yields, or done
@@ -156,19 +162,37 @@ export function fakeLedger({ mnemonic = ABANDON, app = 'Solana' } = {}) {
     }
     if (ins === 0x03) {
       const index = new DataView(data.buffer, data.byteOffset).getUint32(66, false);
-      let a = addressOf('btc', secretAt(seed, 'btc', `m/84'/0'/0'/0/${index}`));
+      let a = hex(data.subarray(1, 33)) === TAPROOT_ID ? taprootAddressOf(secretAt(seed, 'btc', `m/86'/0'/0'/0/${index}`)) : addressOf('btc', secretAt(seed, 'btc', `m/84'/0'/0'/0/${index}`));
       if (dev.lie.btcAddress) a = dev.lie.btcAddress(a);
       if (data[0] === 1 && (await decision()) !== 'approve') return sw(0x6985);
       return ok(utf8(a));
     }
+    if (ins === 0x10) {
+      // a BIP-137 message: the real app asks for the message piece by piece (its Merkle root is all this command
+      // carries); this one signs the message the test gave it
+      const { path } = readPath(data);
+      if ((await decision()) !== 'approve') return sw(0x6985);
+      const s = secp256k1.sign(legacyDigest(dev.btcMessage ?? new Uint8Array(0)), root.derive(path).privateKey, { prehash: false, format: 'recovered' });
+      return ok(concat(Uint8Array.of(31 + s[0]), s.slice(1)));
+    }
     if (ins === 0x04) {
       if ((await decision()) !== 'approve') return sw(0x6985);
-      // the wallet's key is the one at m/84'/0'/0'/0/index; the test says which index and which sighashes
-      const { index = 0, digests = dev.btcDigests ?? [] } = dev.btcPlan ?? {};
-      const key = secretAt(seed, 'btc', `m/84'/0'/0'/0/${index}`);
-      const pub = secp256k1.getPublicKey(key, true);
-      let list = digests.map((d, i) => concat(Uint8Array.of(i, pub.length), pub, secp256k1.sign(d, key, { prehash: false, format: 'der' }), Uint8Array.of(0x01)));
-      if (dev.lie.btcYield) list = dev.lie.btcYield(list, { pub, key });
+      // the wallet's keys are at m/84'/0'/0'/0/index and m/86'/0'/0'/0/index; the test says which index and, for
+      // each policy, which inputs with which sighashes (`digests`: segwit inputs 0, 1, 2...; `taproot`: [{ input,
+      // digest }])
+      const { index = 0, digests = dev.btcDigests ?? [], segwit = null, taproot = [] } = dev.btcPlan ?? {};
+      const pid = hex(data.subarray(data.length - 64, data.length - 32));
+      let list, key, pub;
+      if (pid === TAPROOT_ID) {
+        key = secretAt(seed, 'btc', `m/86'/0'/0'/0/${index}`);
+        pub = schnorr.getPublicKey(key);
+        list = taproot.map(({ input, digest }) => concat(Uint8Array.of(input, 32), pub, signKeyPath([digest], key, new Uint8Array(32)).signatures[0]));
+      } else {
+        key = secretAt(seed, 'btc', `m/84'/0'/0'/0/${index}`);
+        pub = secp256k1.getPublicKey(key, true);
+        list = (segwit ?? digests.map((digest, input) => ({ input, digest }))).map(({ input, digest }) => concat(Uint8Array.of(input, pub.length), pub, secp256k1.sign(digest, key, { prehash: false, format: 'der' }), Uint8Array.of(0x01)));
+      }
+      if (dev.lie.btcYield) list = dev.lie.btcYield(list, { pub, key, taproot: pid === TAPROOT_ID });
       yields = list;
       if (!yields.length) { yields = null; return ok(); }
       return concat(Uint8Array.of(0x10), yields.shift(), sw(0xe000));

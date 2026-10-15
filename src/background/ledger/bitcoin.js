@@ -2,12 +2,14 @@
 // transaction: it takes commitments (Merkle roots of every map of a PSBT version 2) and asks plum for what it wants to
 // see, piece by piece (status 0xE000 and a client command; plum answers with CONTINUE, CLA 0xF8). Accounts are wallet
 // policies: plum's Bitcoin wallets on a Ledger are the default native segwit one, wpkh(@0/**) over
-// [fingerprint/84'/0'/0']xpub, so nothing has to be registered on the device.
+// [fingerprint/84'/0'/0']xpub, and the default taproot one, tr(@0/**) over [fingerprint/86'/0'/0']xpub, so nothing has
+// to be registered on the device. A send spending coins of both is signed in two passes, one per policy.
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { HDKey } from '@scure/bip32';
 import { concat, equal, hex, u32le, u64le, utf8 } from '../../shared/bytes.js';
 import { btcAddressOfPublicKey, hash160 } from '../keys.js';
+import { outputKey, taprootAddress } from '../taproot.js';
 import { LedgerError, apdu, atLeast, pathSteps, splitAnswer, swError } from './apdu.js';
 
 export const APP = 'Bitcoin';
@@ -163,6 +165,8 @@ async function run(link, ins, data, interp = null) {
 
 /** The default native segwit account: { name: '', template: 'wpkh(@0/**)', keys: ["[fpr/84'/0'/0']xpub..."] }. */
 export const segwitPolicy = (fingerprint, xpub, account = 0) => ({ name: '', template: 'wpkh(@0/**)', keys: [`[${fingerprint}/84'/0'/${account}']${xpub}`] });
+/** The default taproot account (BIP-86 key path): tr(@0/**) over [fpr/86'/0'/0']xpub. */
+export const taprootPolicy = (fingerprint, xpub, account = 0) => ({ name: '', template: 'tr(@0/**)', keys: [`[${fingerprint}/86'/0'/${account}']${xpub}`] });
 
 export function serializePolicy(p) {
   const name = utf8(p.name);
@@ -219,6 +223,13 @@ export function derive(xpubText, index, change = 0) {
   return { publicKey: node.publicKey, address: btcAddressOfPublicKey(node.publicKey) };
 }
 
+/** A taproot (BIP-86) account's key path at receive index `index`: { internal (x-only), output (x-only), address }. */
+export function deriveTaproot(xpubText, index) {
+  const internal = HDKey.fromExtendedKey(xpubText).deriveChild(0).deriveChild(index).publicKey.slice(1);
+  const output = outputKey(internal).x;
+  return { internal, output, address: taprootAddress(output) };
+}
+
 /** A BIP-137 signature of a message by the key at `path`: 65 bytes (header, r, s), as base64 text expects. */
 export async function signMessage(link, path, message) {
   const chunks = [];
@@ -238,11 +249,13 @@ const origin = (fpr, path) => concat(Uint8Array.from(fpr.match(/../g), (b) => Nu
 const txidBytes = (txid) => Uint8Array.from(txid.match(/../g).reverse(), (b) => Number.parseInt(b, 16));
 
 /**
- * The PSBT maps for one of plum's own sends from a native segwit wallet: every input is the wallet's (with its whole
- * previous transaction, so the device can check the amounts), every output plum's, the change marked as the
- * wallet's own. `prevTxs` maps txid -> previous transaction without witnesses.
+ * The PSBT maps for one of plum's own sends from a wallet's two addresses: every input is the wallet's (with its whole
+ * previous transaction, so the device can check the amounts), a native segwit coin with its key's origin, a taproot one
+ * (`kind: 'p2tr'`) with its BIP-86 internal key's; every output is plum's, the change (back to the segwit address)
+ * marked as the wallet's own. `keys`: { fingerprint, segwit: { publicKey, path }, taproot: { internal, output, path } }.
+ * `prevTxs` maps txid -> previous transaction without witnesses.
  */
-export function psbtMaps({ inputs, outputs, sequence, locktime = 0 }, { publicKey, path, fingerprint: fpr }, prevTxs) {
+export function psbtMaps({ inputs, outputs, sequence, locktime = 0 }, { fingerprint: fpr, segwit, taproot = null }, prevTxs) {
   const global = new Map([
     [key(0x02), u32le(2)],
     [key(0x03), u32le(locktime)],
@@ -250,22 +263,27 @@ export function psbtMaps({ inputs, outputs, sequence, locktime = 0 }, { publicKe
     [key(0x05), varint(outputs.length)],
     [key(0xfb), u32le(2)],
   ]);
-  const ownScript = concat(Uint8Array.of(0x00, 0x14), hash160(publicKey));
+  const ownScript = concat(Uint8Array.of(0x00, 0x14), hash160(segwit.publicKey));
   const ins = inputs.map((i) => {
     const prev = prevTxs.get(i.txid);
     if (!prev) throw new LedgerError('error', 'plum is missing a previous transaction for your Ledger');
-    return new Map([
-      [key(0x00), prev],
-      [key(0x01), concat(u64le(i.value), varint(ownScript.length), ownScript)],
-      [key(0x06, ...publicKey), origin(fpr, path)],
-      [key(0x0e), txidBytes(i.txid)],
-      [key(0x0f), u32le(i.vout)],
-      [key(0x10), u32le(sequence)],
-    ]);
+    const m = new Map([[key(0x00), prev], [key(0x0e), txidBytes(i.txid)], [key(0x0f), u32le(i.vout)], [key(0x10), u32le(sequence)]]);
+    if (i.kind === 'p2tr') {
+      if (!taproot) throw new LedgerError('refused', "this wallet has no taproot address on its Ledger");
+      const script = concat(Uint8Array.of(0x51, 0x20), taproot.output);
+      m.set(key(0x01), concat(u64le(i.value), varint(script.length), script));
+      // BIP-371: no leaf hashes (the key path), then the origin
+      m.set(key(0x16, ...taproot.internal), concat(varint(0), origin(fpr, taproot.path)));
+      m.set(key(0x17), taproot.internal);
+    } else {
+      m.set(key(0x01), concat(u64le(i.value), varint(ownScript.length), ownScript));
+      m.set(key(0x06, ...segwit.publicKey), origin(fpr, segwit.path));
+    }
+    return m;
   });
   const outs = outputs.map((o) => {
     const m = new Map([[key(0x03), u64le(o.value)], [key(0x04), o.script]]);
-    if (o.mine) m.set(key(0x02, ...publicKey), origin(fpr, path));
+    if (o.mine) m.set(key(0x02, ...segwit.publicKey), origin(fpr, segwit.path));
     return m;
   });
   return { global, ins, outs };

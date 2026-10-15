@@ -761,10 +761,17 @@ const LEDGER_PATHS = {
   eth: /^m\/44'\/60'\/(0'\/0\/\d{1,4}|\d{1,4}'\/0\/0)$/,
   btc: /^m\/84'\/0'\/0'\/0\/\d{1,4}$/,
 };
+// and a Bitcoin wallet's taproot address beside its native segwit one (BIP-86)
+const LEDGER_TAPROOT_PATH = /^m\/86'\/0'\/0'\/0\/\d{1,4}$/;
 
 /** What goes on disk of a Ledger wallet's chains: the address and path of each (the rest stays in the vault). */
 function ledgerChains(hw) {
-  return Object.fromEntries(Object.entries(hw.chains ?? {}).filter(([c]) => CHAINS.includes(c)).map(([c, v]) => [c, { address: v.address, path: v.path }]));
+  // (Bitcoin's addresses keep their public keys beside them, as every wallet's do: sites ask for them)
+  const btc = (v) => ({
+    ...(v.publicKey ? { publicKey: v.publicKey } : {}),
+    ...(v.taproot ? { taproot: { address: v.taproot.address, path: v.taproot.path, publicKey: v.taproot.publicKey } } : {}),
+  });
+  return Object.fromEntries(Object.entries(hw.chains ?? {}).filter(([c]) => CHAINS.includes(c)).map(([c, v]) => [c, { address: v.address, path: v.path, ...(c === 'btc' ? btc(v) : {}) }]));
 }
 
 /** A new Ledger account's name: "ledger", then "ledger 2", "ledger 3"... */
@@ -781,6 +788,9 @@ function checkFound(f) {
   if (!f || typeof f !== 'object' || !['plum', 'live'].includes(f.layout) || !Number.isInteger(f.index) || f.index < 0 || f.index >= 10_000) throw fail('one of those wallets is malformed');
   const chains = Object.entries(f.chains ?? {});
   if (!chains.length || chains.some(([c, v]) => !CHAINS.includes(c) || typeof v?.address !== 'string' || !LEDGER_PATHS[c].test(v.path ?? ''))) throw fail('one of those wallets is malformed');
+  if (f.chains.btc?.publicKey != null && !/^0[23][0-9a-f]{64}$/.test(f.chains.btc.publicKey)) throw fail('one of those wallets is malformed');
+  const tr = f.chains.btc?.taproot;
+  if (tr != null && (typeof tr.address !== 'string' || !LEDGER_TAPROOT_PATH.test(tr.path ?? '') || !/^[0-9a-f]{64}$/.test(tr.publicKey ?? ''))) throw fail('one of those wallets is malformed');
   return f;
 }
 
@@ -824,10 +834,13 @@ export async function addLedger({ account = null, found, name, icon }) {
 /** A Ledger wallet's own record on one chain, from the vault: { wallet, address, path, (Bitcoin) xpub, fingerprint }. */
 export async function ledgerOf(chain, address) {
   const o = await requireOpen();
-  const w = await walletFor(chain, address);
+  // (a Bitcoin wallet by either of its addresses)
+  const w = (await wallets()).find((x) => x.chains[chain]?.address === address || (chain === 'btc' && x.chains.btc?.taproot?.address === address));
+  if (!w) throw fail(`that address isn't one of your wallets`);
   const hw = o.data.ledgers && Object.hasOwn(o.data.ledgers, w.id) ? o.data.ledgers[w.id] : null;
   const c = hw?.chains?.[chain];
-  if (!c || c.address !== address || !LEDGER_PATHS[chain]?.test(c.path)) throw fail('this Ledger wallet is missing from the vault: remove it and add it again from your Ledger');
+  const ok = c && (c.address === address || c.taproot?.address === address) && LEDGER_PATHS[chain]?.test(c.path) && (!c.taproot || LEDGER_TAPROOT_PATH.test(c.taproot.path));
+  if (!ok) throw fail('this Ledger wallet is missing from the vault: remove it and add it again from your Ledger');
   return { wallet: w, ...c, index: hw.index };
 }
 

@@ -19,12 +19,14 @@ import * as D from './ledger/device.js';
 import * as LE from './ledger/ethereum.js';
 import * as LS from './ledger/solana.js';
 import { NetError, failover, request } from './net.js';
+import { verifyKeyPath } from './taproot.js';
 import * as W from './wallet.js';
 
 export const APPS = { sol: LS.APP, eth: LE.APP, btc: LB.APP };
 /** The sequence number plum's Bitcoin sends carry (btc.js: opt-in replace-by-fee). */
 const BTC_SEQUENCE = 0xfffffffd;
 const BTC_ACCOUNT = "m/84'/0'/0'";
+const BTC_TAPROOT_ACCOUNT = "m/86'/0'/0'";
 
 export const status = D.status;
 export const cancel = D.cancel;
@@ -37,8 +39,9 @@ export async function owns(chain, address) {
   return (await W.walletOf(chain, address))?.scheme === W.LEDGER;
 }
 
-/** Does approving this request need a Ledger? */
-export const signsFor = (r) => (r.kind === 'connect' || r.kind === 'evmConnect' ? false : owns(r.chain, r.account));
+/** Does approving this request need a Ledger? (Connecting only shows addresses.) */
+const CONNECTS = new Set(['connect', 'evmConnect', 'btcConnect']);
+export const signsFor = (r) => (CONNECTS.has(r.kind) ? false : owns(r.chain, r.account));
 
 /* ------------------------------------------------------------ Solana */
 
@@ -131,37 +134,110 @@ async function previousTransactions(inputs) {
   return out;
 }
 
-/** The index n of a Bitcoin wallet's path m/84'/0'/0'/0/n. */
+/** The index n of a Bitcoin wallet's path m/84'/0'/0'/0/n (or m/86'/0'/0'/0/n). */
 const btcIndex = (path) => Number.parseInt(path.split('/').pop(), 10);
 
+/** A Ledger wallet's Bitcoin keys, worked out from the account keys in its vault record and checked against its
+ * addresses: { fingerprint, segwit: { publicKey, path }, taproot: { internal, output, path } | null }. */
+function btcKeys(rec) {
+  const s = LB.derive(rec.xpub, btcIndex(rec.path));
+  if (s.address !== rec.address) throw new LedgerError('mismatch', "this wallet's Bitcoin address doesn't come from its Ledger's key");
+  let taproot = null;
+  if (rec.taproot) {
+    const t = LB.deriveTaproot(rec.taproot.xpub, btcIndex(rec.taproot.path));
+    if (t.address !== rec.taproot.address) throw new LedgerError('mismatch', "this wallet's taproot address doesn't come from its Ledger's key");
+    taproot = { internal: t.internal, output: t.output, path: rec.taproot.path };
+  }
+  return { fingerprint: rec.fingerprint, segwit: { publicKey: s.publicKey, path: rec.path }, taproot };
+}
+
 /**
- * A signer for btc.js's signPlan: the Ledger signs `plan` (as a PSBT, every input with its previous transaction, the
- * change marked as the wallet's), and each signature must be this wallet's key's, over plum's own sighash for that
- * input. Returns { publicKey, signatures (DER, low s) }.
+ * A signer for btc.js's signSpend: the Ledger signs `plan` (a PSBT: every input with its previous transaction, the
+ * change marked as the wallet's) for one of the wallet's addresses at a time, `address` (signSpend asks for its bc1q
+ * coins, then its bc1p ones, so a send spending both is two passes on the device, one per policy). Each signature must
+ * be that address's key's, over plum's own sighash for that input: { publicKey, signatures (DER, low s) } for bc1q,
+ * { outputKey, signatures (BIP-340, the key path) } for bc1p.
  */
 export async function signBtc(address, plan, digests) {
   const rec = await W.ledgerOf('btc', address);
-  const { publicKey, address: derived } = LB.derive(rec.xpub, btcIndex(rec.path));
-  if (derived !== address) throw new LedgerError('mismatch', "this wallet's Bitcoin address doesn't come from its Ledger's key");
+  const keys = btcKeys(rec);
+  const taproot = !!rec.taproot && address === rec.taproot.address;
+  // the inputs this pass signs: the plan's coins of this address's kind, in order (as signSpend's digests are)
+  const mine = plan.inputs.flatMap((c, i) => ((c.kind === 'p2tr') === taproot ? [i] : []));
+  if (mine.length !== digests.length) throw new LedgerError('refused', 'plum asked your Ledger for signatures that do not match this send');
   const prev = await previousTransactions(plan.inputs);
+  const both = plan.inputs.some((c) => c.kind === 'p2tr') && plan.inputs.some((c) => c.kind !== 'p2tr');
   return D.use(LB.APP, async (link, info, { confirm }) => {
     LB.checkApp(info);
     if ((await LB.fingerprint(link)) !== rec.fingerprint) throw wrongDevice();
-    const maps = LB.psbtMaps({ inputs: plan.inputs, outputs: plan.outputs, sequence: BTC_SEQUENCE }, { publicKey, path: rec.path, fingerprint: rec.fingerprint }, prev);
-    confirm('check every output and the fee on your Ledger, then sign it there');
-    const yielded = await LB.signPsbt(link, maps, LB.segwitPolicy(rec.fingerprint, rec.xpub));
-    if (yielded.length !== digests.length) throw badSignature();
-    const signatures = digests.map((digest, i) => {
-      const got = yielded.filter((y) => y.index === i);
-      if (got.length !== 1 || !equal(got[0].publicKey, publicKey) || got[0].signature.at(-1) !== 0x01) throw badSignature();
+    const maps = LB.psbtMaps({ inputs: plan.inputs, outputs: plan.outputs, sequence: BTC_SEQUENCE }, keys, prev);
+    confirm(both
+      ? `check every output and the fee on your Ledger, then sign it there. It asks twice: now for this wallet's ${taproot ? 'taproot (bc1p)' : 'segwit (bc1q)'} coins, ${taproot ? 'after' : 'then'} for its ${taproot ? 'segwit (bc1q)' : 'taproot (bc1p)'} ones.`
+      : 'check every output and the fee on your Ledger, then sign it there');
+    const policy = taproot ? LB.taprootPolicy(rec.fingerprint, rec.taproot.xpub) : LB.segwitPolicy(rec.fingerprint, rec.xpub);
+    const yielded = await LB.signPsbt(link, maps, policy);
+    if (yielded.length !== mine.length) throw badSignature();
+    const signatures = mine.map((index, k) => {
+      const got = yielded.filter((y) => y.index === index);
+      if (got.length !== 1) throw badSignature();
+      const { publicKey, signature } = got[0];
+      if (taproot) {
+        // the key path with SIGHASH_DEFAULT: 64 bytes, by the output key
+        if (!(equal(publicKey, keys.taproot.internal) || equal(publicKey, keys.taproot.output)) || signature.length !== 64) throw badSignature();
+        if (!verifyKeyPath(signature, digests[k], keys.taproot.output)) throw badSignature();
+        return signature;
+      }
+      if (!equal(publicKey, keys.segwit.publicKey) || signature.at(-1) !== 0x01) throw badSignature();
       let der;
-      try { der = LB.lowS(got[0].signature.slice(0, -1)); } catch { throw badSignature(); }
-      if (!secp256k1.verify(der, digest, publicKey, { prehash: false, format: 'der' })) throw badSignature();
+      try { der = LB.lowS(signature.slice(0, -1)); } catch { throw badSignature(); }
+      if (!secp256k1.verify(der, digests[k], keys.segwit.publicKey, { prehash: false, format: 'der' })) throw badSignature();
       return der;
     });
-    return { publicKey, signatures };
+    return taproot ? { outputKey: keys.taproot.output, signatures } : { publicKey: keys.segwit.publicKey, signatures };
   });
 }
+
+/**
+ * A legacy (BIP-137) message signed on the Ledger, in the shape bip322.js's signLegacy takes from a signer:
+ * { publicKey, signatures: [{ r, s, recovery }] }, checked to recover to this wallet's key over plum's own digest.
+ * (The device hashes the message itself, so it gets the message, not the digest.)
+ */
+export async function signBtcCompact(address, message, digests) {
+  const rec = await W.ledgerOf('btc', address);
+  const { publicKey } = LB.derive(rec.xpub, btcIndex(rec.path));
+  return D.use(LB.APP, async (link, info, { confirm }) => {
+    LB.checkApp(info);
+    if ((await LB.fingerprint(link)) !== rec.fingerprint) throw wrongDevice();
+    confirm('check the message on your Ledger, then sign it there');
+    const sig = await LB.signMessage(link, rec.path, message);
+    // a compressed key's header: 31 + the recovery id
+    const recovery = sig[0] - 31;
+    if (recovery < 0 || recovery > 3) throw badSignature();
+    const r = sig.slice(1, 33), s = sig.slice(33, 65);
+    let back = null;
+    try { back = new secp256k1.Signature(BigInt(`0x${hex(r)}`), BigInt(`0x${hex(s)}`)).addRecoveryBit(recovery).recoverPublicKey(digests[0]).toBytes(true); } catch { /* not a signature */ }
+    if (!back || !equal(back, publicKey)) throw badSignature();
+    return { publicKey, signatures: [{ r, s, recovery }] };
+  });
+}
+
+/** Why a Ledger wallet can't take a Bitcoin site's request (refused before the window), or null. */
+export async function btcRefusal(method, params) {
+  if ((await W.activeWallet())?.scheme !== W.LEDGER) return null;
+  if (method === 'signPsbt') return "plum doesn't sign a site's PSBT with a Ledger yet: use another wallet for this site";
+  if (method === 'signMessage' && String(params?.protocol ?? 'BIP322').toUpperCase() !== 'ECDSA') {
+    return 'a Ledger signs Bitcoin messages in the legacy format (ECDSA) only, not BIP-322: ask the site for that format, or use another wallet';
+  }
+  return null;
+}
+
+/** The signer a Bitcoin site's request takes from a Ledger wallet: plum's own transfers (`r.plan`), and legacy
+ * messages (`compact`). */
+export const btcSigner = (r) => async (address, digests, { compact = false } = {}) => {
+  if (compact) return signBtcCompact(address, r.messageBytes, digests);
+  if (!r.plan) throw new LedgerError('refused', "a Ledger can't sign this Bitcoin request");
+  return signBtc(address, r.plan, digests);
+};
 
 /* ------------------------------------------------------------ reading a Ledger's wallets */
 
@@ -179,10 +255,21 @@ async function readChain(chain, { from, count }) {
       LB.checkApp(info);
       const fingerprint = await LB.fingerprint(link);
       const xpub = await LB.xpub(link, BTC_ACCOUNT);
-      for (let n = from; n < from + count; n++) out.push({ layout: 'plum', index: n, path: LAYOUTS.plum.btc(n), address: LB.derive(xpub, n).address, xpub, fingerprint });
-      // the device works the first address out from the account itself: it must be the one plum worked out
+      const xpub86 = await LB.xpub(link, BTC_TAPROOT_ACCOUNT);
+      for (let n = from; n < from + count; n++) {
+        const key = LB.derive(xpub, n);
+        const tr = LB.deriveTaproot(xpub86, n);
+        out.push({
+          layout: 'plum', index: n, path: LAYOUTS.plum.btc(n), address: key.address, publicKey: hex(key.publicKey), xpub, fingerprint,
+          // its taproot address beside it, as every plum wallet has (the x-only internal key is what sites build for)
+          taproot: { address: tr.address, path: `m/86'/0'/0'/0/${n}`, publicKey: hex(tr.internal), xpub: xpub86 },
+        });
+      }
+      // the device works the first addresses out from the accounts itself: they must be the ones plum worked out
       const first = await LB.walletAddress(link, LB.segwitPolicy(fingerprint, xpub), { index: from });
       if (first !== out[0].address) throw new LedgerError('mismatch', "your Ledger's Bitcoin address doesn't match its own account key");
+      const firstTr = await LB.walletAddress(link, LB.taprootPolicy(fingerprint, xpub86), { index: from });
+      if (firstTr !== out[0].taproot.address) throw new LedgerError('mismatch', "your Ledger's taproot address doesn't match its own account key");
       return out;
     }
     for (const layout of ['plum', 'live']) {
@@ -223,12 +310,13 @@ async function scan({ chains, account = null, from = 0, count = 5 }, usage) {
   for (const x of read) {
     const key = `${x.layout}:${x.index}`;
     const g = groups.get(key) ?? { key, layout: x.layout, index: x.index, chains: {} };
-    g.chains[x.chain] = x.chain === 'btc' ? { address: x.address, path: x.path, xpub: x.xpub, fingerprint: x.fingerprint } : { address: x.address, path: x.path };
+    g.chains[x.chain] = x.chain === 'btc' ? { address: x.address, path: x.path, publicKey: x.publicKey, xpub: x.xpub, fingerprint: x.fingerprint, taproot: x.taproot } : { address: x.address, path: x.path };
     groups.set(key, g);
   }
   const found = [...groups.values()];
   const known = new Set((await W.wallets()).flatMap((w) => Object.values(w.chains).map((c) => c.address)));
-  const used = await usage(found.map((g) => ({ scheme: g.layout, index: g.index, chains: Object.fromEntries(Object.entries(g.chains).map(([c, v]) => [c, { address: v.address, path: v.path }])) })));
+  // (a Bitcoin wallet's coins are on both its addresses)
+  const used = await usage(found.map((g) => ({ scheme: g.layout, index: g.index, chains: Object.fromEntries(Object.entries(g.chains).map(([c, v]) => [c, { address: v.address, path: v.path, ...(v.taproot ? { taproot: { address: v.taproot.address } } : {}) }])) })));
   const id = newId();
   for (const [k, v] of scans) if (Date.now() - v.at > 600_000) scans.delete(k);
   scans.set(id, { at: Date.now(), account, found: new Map(found.map((g) => [g.key, g])) });
@@ -264,7 +352,9 @@ async function show({ chain, address }) {
     else {
       LB.checkApp(info);
       if ((await LB.fingerprint(link)) !== rec.fingerprint) throw wrongDevice();
-      got = await LB.walletAddress(link, LB.segwitPolicy(rec.fingerprint, rec.xpub), { index: btcIndex(rec.path), display: true });
+      const tr = !!rec.taproot && address === rec.taproot.address;
+      const policy = tr ? LB.taprootPolicy(rec.fingerprint, rec.taproot.xpub) : LB.segwitPolicy(rec.fingerprint, rec.xpub);
+      got = await LB.walletAddress(link, policy, { index: btcIndex(tr ? rec.taproot.path : rec.path), display: true });
     }
     if (chain === 'eth' ? !E.sameAddress(got, address) : got !== address) throw wrongDevice();
     return true;
@@ -293,6 +383,8 @@ export async function approvalNote(r) {
     evmTx: "after you approve it here, your Ledger shows the transaction. If it calls a contract, the Ethereum app asks for blind signing to be on in its settings.",
     evmMessage: 'after you approve it here, your Ledger shows the message: sign it there too.',
     evmTyped: "your Ledger shows every field when its Ethereum app has raw messages (or blind signing) turned on in its settings; otherwise it shows the two hashes below. Check them against these.",
+    btcSend: 'after you approve it here, your Ledger shows every output and the fee: sign it there too, then plum sends it.',
+    btcMessage: 'after you approve it here, your Ledger shows the message: sign it there too (in the legacy format, the one a Ledger signs).',
   };
   const out = { app, note: notes[r.kind] ?? null };
   if (r.kind === 'evmTyped') {

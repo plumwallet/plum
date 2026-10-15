@@ -127,7 +127,7 @@ export const SCENARIOS = [
       const fpr = root.fingerprint.toString(16).padStart(8, '0');
       const xpub = root.derive("m/84'/0'/0'").publicExtendedKey;
       const { publicKey } = LB.derive(xpub, 0);
-      const maps = LB.psbtMaps({ inputs: BTC_PLAN.inputs, outputs: BTC_PLAN.outputs, sequence: 0xfffffffd }, { publicKey, path: BTC, fingerprint: fpr }, BTC_PREV);
+      const maps = LB.psbtMaps({ inputs: BTC_PLAN.inputs, outputs: BTC_PLAN.outputs, sequence: 0xfffffffd }, { fingerprint: fpr, segwit: { publicKey, path: BTC } }, BTC_PREV);
       return LB.signPsbt(l, maps, LB.segwitPolicy(fpr, xpub));
     },
     check: (r) => {
