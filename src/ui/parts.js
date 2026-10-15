@@ -212,11 +212,11 @@ const ETH_PAINT = [' aab ', 'accdd', ' cee '];
 const ETH_INKS = { a: '#d6dcfa', b: '#9aa9f3', c: '#7f93ef', d: '#627eea', e: '#4c63c8' };
 const ETH_MARK = ETH_ART.map((row, r) => [...row].map((ch, c) => [ch, ETH_INKS[ETH_PAINT[r][c]] ?? null]));
 
-/** BTC's mark, typed: a chunky B in Bitcoin's orange, lit on its left edge and shaded on its right. */
-const BTC_ART = ['|##\\ ', '|##< ', '|##/ '];
-const BTC_PAINT = ['abbc ', 'abbc ', 'abbc '];
-const BTC_INKS = { a: '#ffc56b', b: '#f7931a', c: '#c96f0a' };
-const BTC_MARK = BTC_ART.map((row, r) => [...row].map((ch, c) => [ch, BTC_INKS[BTC_PAINT[r][c]] ?? null]));
+/** BTC's mark, typed: a B with the two strokes of the bitcoin sign doubled through its top and bottom, in Bitcoin's
+ * orange, lit from the top left like the ether mark. */
+const BTC_BARS = ['||##\\', '|###<', '||##/'];
+const BTC_STOPS = [[0, 0xffd08a], [0.35, 0xffad45], [0.6, 0xf7931a], [1, 0xb85f00]];
+const BTC_MARK = BTC_BARS.map((bar, r) => [...bar].map((ch, c) => [ch, stopColour(BTC_STOPS, (r / (BTC_BARS.length - 1) + c / (bar.length - 1)) / 2)]));
 
 /** POL's mark, typed: two hexagons joined at an edge (Polygon's link), in Polygon's own purple, lit from the left. */
 const POL_ART = ['/#\\#\\', '|#|#|', '\\#/#/'];
