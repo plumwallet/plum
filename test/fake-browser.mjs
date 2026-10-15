@@ -115,8 +115,10 @@ export function fakeChain(balances = {}) {
     }
     return { t, after, err };
   };
-  // accounts with data (vote and stake accounts, NFTs), by address, as the RPC returns them
+  // accounts with data (vote and stake accounts, NFTs), by address, as the RPC returns them; `after` holds what a
+  // simulation returns for an account instead (a transaction that changes it)
   const accounts = new Map();
+  const afterSim = new Map();
   const account = (a, map = bal) => accounts.get(a) ?? (map.has(a) ? { lamports: Number(map.get(a)), owner: SYSTEM_PROGRAM, data: ['', 'base64'], executable: false } : null);
   const handlers = {
     getEpochInfo: () => ({ absoluteSlot: 4_320_100, blockHeight: 4_000_000, epoch: 10, slotIndex: 100, slotsInEpoch: 432_000, transactionCount: 1 }),
@@ -139,7 +141,7 @@ export function fakeChain(balances = {}) {
       return {
         value: {
           err, logs: err ? ['Transfer: insufficient lamports'] : [], unitsConsumed: 450, fee: 5000 * t.required,
-          accounts: (cfg.accounts?.addresses ?? []).map((a) => account(a, after)),
+          accounts: (cfg.accounts?.addresses ?? []).map((a) => (afterSim.has(a) ? afterSim.get(a) : account(a, after))),
           preBalances: t.keys.map((k) => Number(bal.get(k) ?? 0n)),
           postBalances: t.keys.map((k) => Number(after.get(k) ?? 0n)),
           preTokenBalances: [], postTokenBalances: [],
@@ -156,6 +158,7 @@ export function fakeChain(balances = {}) {
     log,
     sentTxs,
     accounts,
+    afterSim,
     handlers,
     /** a hook to change simulation results (value -> value), or null */
     simExtra: null,
