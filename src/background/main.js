@@ -1028,6 +1028,8 @@ async function buildOwn(rpc, payer, instructions) {
   const v1 = (units, blockhash) => unsignedTx(compileV1({ payer, blockhash, instructions, config: { computeUnitLimit: units, priorityFee: (BigInt(units) * price + 999_999n) / 1_000_000n, loadedAccountsDataSizeLimit: 64 * 1024 * 1024 } }));
   let { blockhash } = await rpc.latestBlockhash();
   const make = legacy(200_000, blockhash).length > MAX_TX_BYTES ? v1 : legacy;
+  // a Ledger's Solana app reads legacy and v0 transactions only
+  if (make === v1 && (await HW.owns('sol', payer))) throw fail("this is too big for a Ledger: it needs Solana's larger v1 transaction, which the Ledger's Solana app can't sign");
   let trial = await rpc.simulate(b64encode(make(200_000, blockhash)));
   // a heavier one (a programmable NFT's transfer) is measured again with all the room there is
   if (/ComputationalBudgetExceeded|exceeded CUs/.test(`${JSON.stringify(trial.err ?? '')}\n${(trial.logs ?? []).join('\n')}`)) trial = await rpc.simulate(b64encode(make(1_400_000, blockhash)));
