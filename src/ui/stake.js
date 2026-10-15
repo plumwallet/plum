@@ -93,11 +93,7 @@ function accountScreen(a, validator, o) {
   }
   const me = active().chains.sol.address;
   const role = (addr) => (addr === me ? 'you' : short(addr, 6));
-  const why = !step && a.state === 'deactivating' ? `it can be withdrawn once this epoch ends (${about(o.epochEndsIn)})`
-    : !step && a.locked ? 'it is locked up: it can be withdrawn when its lockup ends'
-      : !step && a.state !== 'deactivating' && a.staker !== me && a.withdrawer !== me ? null
-        : !step && (a.state === 'active' || a.state === 'activating') ? "this wallet isn't its staker, so it can't unstake it"
-          : !step && (a.state === 'inactive' || a.state === 'undelegated') ? "this wallet isn't its withdrawer, so it can't withdraw it" : null;
+  const why = step ? null : waiting(a, o);
   show(...screen('stake account', () => stakeScreen(),
     box(null, { tone: 'soft' },
       kv('holds', sol(a.lamports, 9)),
@@ -114,6 +110,14 @@ function accountScreen(a, validator, o) {
     addressBlock(a.address, { copy: true }),
     why ? h('p', { class: 'fine' }, why) : null,
     err, actions(() => stakeScreen(), next)));
+}
+
+/** Why a stake account has no step to take now, in words. */
+function waiting(a, o) {
+  if (a.state === 'deactivating') return `it can be withdrawn once this epoch ends (${about(o.epochEndsIn)})`;
+  if (a.locked) return 'it is locked up: it can be withdrawn when its lockup ends';
+  if (a.state === 'active' || a.state === 'activating') return "this wallet isn't its staker, so it can't unstake it";
+  return "this wallet isn't its withdrawer, so it can't withdraw it";
 }
 
 /* ------------------------------------------------------------ staking: pick a validator, say how much */
