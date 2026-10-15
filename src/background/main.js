@@ -17,6 +17,8 @@ import {
   signersOf, startsLikeTransaction, unsignedTx, withSignature,
 } from '../shared/tx.js';
 import * as B from './btc.js';
+import { prepareSpend, spendable } from './btc-send.js';
+import { BTC_APPROVALS, bitcoinSites, ownerOf } from './btc-site.js';
 import * as E from './eth.js';
 import { isMnemonic, newMnemonic, normalizeMnemonic } from './keys.js';
 import { pool } from './net.js';
@@ -105,7 +107,7 @@ const isLocalHost = (h) => h === 'localhost' || h === '127.0.0.1' || h === '[::1
  * lastUsed } }. Connecting one wallet never shows a site your others, and a Solana connection shows nothing on
  * Ethereum (and back). */
 export const sites = () => local.get('sites', {});
-const FIELD = { sol: 'accounts', eth: 'evm' };
+const FIELD = { sol: 'accounts', eth: 'evm', btc: 'btc' };
 
 async function trusted(origin, address, chain = 'sol') {
   const s = (await sites())[origin];
@@ -119,7 +121,7 @@ async function trust(origin, address, chain = 'sol') {
   const cur = all[origin] ?? {};
   const arr = (v) => (Array.isArray(v) ? v : []);
   const list = [...new Set([...arr(cur[FIELD[chain]]), address])];
-  all[origin] = { accounts: arr(cur.accounts), evm: arr(cur.evm), connectedAt: cur.connectedAt ?? now, [FIELD[chain]]: list, lastUsed: now };
+  all[origin] = { accounts: arr(cur.accounts), evm: arr(cur.evm), btc: arr(cur.btc), connectedAt: cur.connectedAt ?? now, [FIELD[chain]]: list, lastUsed: now };
   await local.set({ sites: all });
 }
 
@@ -130,7 +132,7 @@ async function untrust(origin, chain = null) {
   const all = await sites();
   if (!all[origin]) return;
   if (chain) all[origin] = { ...all[origin], [FIELD[chain]]: [] };
-  if (!chain || (!all[origin].accounts?.length && !all[origin].evm?.length)) delete all[origin];
+  if (!chain || (!all[origin].accounts?.length && !all[origin].evm?.length && !all[origin].btc?.length)) delete all[origin];
   await local.set({ sites: all });
 }
 
@@ -278,8 +280,9 @@ async function approvalView() {
     site: siteOf(r.origin),
     account: w ? { name: w.name, icon: w.icon, address: r.account } : { name: '?', icon: null, address: r.account },
     unlocked: await W.isUnlocked(),
-    txCount: r.txs?.length ?? (r.kind === 'evmTx' ? 1 : 0),
+    txCount: r.txs?.length ?? (r.kind === 'evmTx' || r.kind === 'btcPsbt' || r.kind === 'btcSend' ? 1 : 0),
   };
+  if (r.btcView) view.btc = r.btcView;
   if (r.kind === 'message' || r.kind === 'evmMessage') view.message = r.messageView;
   if (r.kind === 'signIn') view.signIn = r.signInView;
   if (r.kind === 'evmTyped') view.typed = r.typedView;
@@ -293,6 +296,10 @@ async function approvalPreview(id) {
   if (r.kind === 'evmTx') {
     // what's previewed is what's signed: the gas limit and fees it was simulated with are kept for the signature
     r.previews ??= evmPreview(r.account, r.call).then(({ signWith, ...p }) => { r.signWith = signWith; return [p]; });
+    return r.previews;
+  }
+  if (r.kind === 'btcPsbt' || r.kind === 'btcSend') {
+    r.previews ??= btcSite.preview(r).then((p) => [p]);
     return r.previews;
   }
   if (!r.txs) return null;
@@ -334,6 +341,7 @@ async function approvalResolve({ id, approve, ignoreRisk }) {
     const p = await approvalPreview(id).then((list) => list?.[0], () => null);
     if (!ignoreRisk && (!p || p.warnings?.some((w) => w.level === 'danger'))) throw fail('this transaction carries a danger: tick "i understand" to send it anyway');
   }
+  if (r.chain === 'btc') await btcSite.check(r, ignoreRisk);
   pending.delete(id);
   try {
     const result = await perform(r);
@@ -347,6 +355,7 @@ async function approvalResolve({ id, approve, ignoreRisk }) {
 
 /** What approving does, per kind. */
 async function perform(r) {
+  if (r.chain === 'btc') return btcSite.perform(r);
   if (r.kind === 'connect') {
     await trust(r.origin, r.account);
     return [r.account];
@@ -528,8 +537,10 @@ export function siteOf(origin) {
 
 function dappRequest(origin, method, params, ctx) {
   const evmMethod = method === 'evm' && params && typeof params === 'object' && typeof params.method === 'string' ? params.method : null;
-  const counted = evmMethod ? EVM_APPROVALS.has(evmMethod) : APPROVAL_METHODS.has(method);
-  const run = () => (evmMethod ? handleEvm(origin, evmMethod, params.params, ctx) : handleRequest(origin, method, params, ctx));
+  const btcMethod = method === 'btc' && params && typeof params === 'object' && typeof params.method === 'string' ? params.method : null;
+  if (method === 'btc' && !btcMethod) return Promise.reject(fail('a request needs a method', -32600));
+  const counted = evmMethod ? EVM_APPROVALS.has(evmMethod) : btcMethod ? BTC_APPROVALS.has(btcMethod) : APPROVAL_METHODS.has(method);
+  const run = () => (evmMethod ? handleEvm(origin, evmMethod, params.params, ctx) : btcMethod ? btcSite.request(origin, btcMethod, params.params, ctx) : handleRequest(origin, method, params, ctx));
   if (!counted) return run();
   const site = siteOf(origin);
   if ((busy.get(site) ?? 0) >= SITE_CAP) return Promise.reject(fail(`this site already has ${SITE_CAP} requests waiting`, 4100));
@@ -835,6 +846,13 @@ async function signAndSendEth(from, tx) {
   return hash;
 }
 
+/* ------------------------------------------------------------ requests from Bitcoin pages (btc-site.js) */
+
+const btcSite = bitcoinSites({
+  approval, trusted, trust, untrust, riskOf, openWelcome, version: VERSION,
+  track: (txid) => { sent.set(txid, { chain: 'btc', status: 'sent', at: Date.now() }); followOther('btc', txid).catch(() => {}); },
+});
+
 function onConnect(port) {
   if (port.name !== 'plum-page') { port.disconnect(); return; }
   const s = port.sender;
@@ -1088,25 +1106,18 @@ async function prepareEthSend({ token, mint, to, amount, max = false }) {
 }
 
 async function prepareBtcSend({ to, amount, speed = 'normal', max = false }) {
-  const { address: from } = await requireActive('btc');
+  const { wallet, address: from } = await requireActive('btc');
   const dest = String(to ?? '').trim();
-  const kind = B.addressScript(dest).kind;
+  B.addressScript(dest);
   const warnings = await recipientChecks('btc', dest, from);
-  const [coins, rates] = await Promise.all([B.utxos(from), B.feeRates()]);
-  const feeRate = rates[['fast', 'normal', 'slow'].includes(speed) ? speed : 'normal'];
   const raw = max ? null : parseUnits(amount, 8);
   if (raw != null && raw <= 0n) throw fail('type an amount above zero');
-  const p = B.plan({ utxos: coins, to: dest, amount: raw ?? 0n, feeRate, change: from, max });
-  if (p.fee * 10n > p.amount) warnings.push({ level: p.fee * 2n > p.amount ? 'danger' : 'warn', text: `the network fee (${formatUnits(p.fee, 8)} BTC) is a big part of what you're sending` });
-  if (p.inputs.some((c) => !c.confirmed)) warnings.push({ level: 'info', text: 'this spends coins that are still waiting for their first confirmation' });
-  const change = p.outputs.find((o) => o.mine)?.value ?? 0n;
-  const preview = {
-    chain: 'btc', amount: p.amount.toString(), fee: p.fee.toString(), feeRate, vsize: p.vsize, inputs: p.inputs.length, change: change.toString(), kind,
-    changes: [{ symbol: 'BTC', decimals: 8, delta: (-(p.amount + p.fee)).toString(), verified: true }],
-    warnings: [],
-  };
-  const id = keep({ chain: 'btc', plan: p, from, recipient: dest });
-  return { id, chain: 'btc', preview, warnings, to: dest, amount: formatUnits(p.amount, 8), symbol: 'BTC', speed };
+  // coins from both addresses, the ones carrying inscriptions or runes kept out (btc-send.js)
+  const owner = ownerOf(wallet);
+  const prep = await prepareSpend({ owner, recipients: [{ to: dest, amount: raw ?? 0n }], speed, max });
+  warnings.push(...prep.warnings);
+  const id = keep({ chain: 'btc', plan: prep.plan, from, owner, recipient: dest });
+  return { id, chain: 'btc', preview: prep.preview, warnings, to: dest, amount: formatUnits(prep.plan.amount, 8), symbol: 'BTC', speed };
 }
 
 /** The most you can send of something (what you hold, less what the fee could cost). */
@@ -1120,8 +1131,8 @@ async function maxSend({ chain = 'sol', token = null, to = null, speed = 'normal
     return formatUnits(left > 0n ? left : 0n, 18);
   }
   if (chain === 'btc') {
-    const { address: from } = await requireActive('btc');
-    const [coins, rates] = await Promise.all([B.utxos(from), B.feeRates()]);
+    const { wallet, address: from } = await requireActive('btc');
+    const [{ free: coins }, rates] = await Promise.all([spendable(ownerOf(wallet)), B.feeRates()]);
     if (!coins.length) return '0';
     const p = B.plan({ utxos: coins, to: to && B.isBtcAddress(to) ? to : from, amount: 0n, feeRate: rates[speed] ?? rates.normal, change: from, max: true });
     return formatUnits(p.amount, 8);
@@ -1231,7 +1242,7 @@ async function submitPrepared({ id }) {
     const hash = await signAndSendEth(p.from, p.tx);
     out = { signature: hash, chain: 'eth', explorer: E.explorerTx(hash) };
   } else if (p.chain === 'btc') {
-    const { raw, txid } = await B.signPlan(p.plan, p.from, (digests) => W.signBtcAs(p.from, digests));
+    const { raw, txid } = await B.signSpend(p.plan, p.owner, (address, digests) => W.signBitcoinAs(address, digests));
     await B.broadcast(raw, txid);
     sent.set(txid, { chain: 'btc', status: 'sent', at: Date.now() });
     followOther('btc', txid).catch(() => {});
@@ -1284,7 +1295,7 @@ async function getQuote({ inputMint, outputMint, amount, slippageBps }) {
  * change24h }], ... }.
  */
 async function balances({ chain = 'sol' } = {}) {
-  const { address } = await requireActive(chain);
+  const { wallet, address } = await requireActive(chain);
   if (chain === 'eth') {
     const s = await getSettings();
     const [{ wei, tokens }, price] = await Promise.all([E.balances(await ethUrls(), address, { hideZero: s.hideZero }), priceOf('eth')]);
@@ -1295,7 +1306,8 @@ async function balances({ chain = 'sol' } = {}) {
     };
   }
   if (chain === 'btc') {
-    const [bal, price] = await Promise.all([B.balance(address), priceOf('btc')]);
+    // both addresses' coins: bc1q and bc1p
+    const [bal, price] = await Promise.all([B.balanceOf(ownerOf(wallet)), priceOf('btc')]);
     return {
       chain, address, pending: bal.pending.toString(),
       native: { amount: bal.total.toString(), decimals: 8, symbol: 'BTC', name: 'bitcoin', price: price.price, usd: price.price == null ? null : (Number(bal.total) / 1e8) * price.price, change24h: price.change24h },
@@ -1354,7 +1366,7 @@ async function activity() {
   const per = await Promise.all(Object.entries(w.chains).map(async ([chain, { address }]) => {
     try {
       if (chain === 'eth') return (await E.activity(address)).map((x) => ({ ...x, chain }));
-      if (chain === 'btc') return (await B.activity(address)).map((x) => ({ ...x, chain }));
+      if (chain === 'btc') return (await B.activityOf(ownerOf(w))).map((x) => ({ ...x, chain }));
       const { rpc, network } = await net();
       const list = await rpc.signatures(address, 25);
       return list.map((s) => ({ chain, id: s.signature, time: s.blockTime, ok: !s.err, explorer: explorerUrl(network, 'tx', s.signature), pending: sent.get(s.signature)?.status === 'sent' }));
@@ -1409,7 +1421,7 @@ async function usage(found) {
       (async () => {
         const b = f.chains.btc?.address;
         if (!b) return;
-        try { const x = await B.balance(b); res.btc = { used: x.txs > 0, amount: x.total.toString() }; } catch { res.btc = { used: null, amount: '0' }; }
+        try { const x = await B.balanceOf({ segwit: b, taproot: f.chains.btc.taproot?.address }); res.btc = { used: x.txs > 0, amount: x.total.toString() }; } catch { res.btc = { used: null, amount: '0' }; }
       })(),
     ]);
     // the same order every time: sol, eth, btc

@@ -173,7 +173,8 @@ function whereInscriptionsGo(x, inputs, outputs, fixed) {
   if (inputs.slice(0, x.index).some((y) => y.value == null)) return 'signing lets them leave with this coin (plum can\'t follow them: an earlier input\'s amount is unknown)';
   const before = sum(inputs.slice(0, x.index).map((y) => y.value));
   const where = x.holds.inscriptions.map((n) => {
-    let at = before + BigInt(n.offset ?? 0);
+    if (n.offset == null) return "leaves with this coin (plum couldn't tell where in the coin it sits, so not where it lands)";
+    let at = before + BigInt(n.offset);
     for (const o of outputs) {
       if (at < o.value) return o.mine ? 'stays with you' : `goes to ${o.address ?? 'a script'}`;
       at -= o.value;
