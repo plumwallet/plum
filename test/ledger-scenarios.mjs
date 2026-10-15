@@ -10,7 +10,8 @@ import { HDKey } from '@scure/bip32';
 import { MessageV0, PublicKey, SystemProgram } from '@solana/web3.js';
 import { base58Decode, base58Encode } from '../src/shared/base58.js';
 import { concat, hex, u32le, u64le, utf8 } from '../src/shared/bytes.js';
-import { compileLegacy, ix } from '../src/shared/tx.js';
+import { associatedTokenAddress } from '../src/shared/pda.js';
+import { TOKEN_PROGRAM, compileLegacy, ix } from '../src/shared/tx.js';
 import * as B from '../src/background/btc.js';
 import { SIGHASH, sighashV0, sighashV1 } from '../src/background/btc-tx.js';
 import * as E from '../src/background/eth.js';
@@ -19,6 +20,7 @@ import { appInfo } from '../src/background/ledger/apdu.js';
 import * as LB from '../src/background/ledger/bitcoin.js';
 import * as LE from '../src/background/ledger/ethereum.js';
 import * as LS from '../src/background/ledger/solana.js';
+import { STAKE_PROGRAM, addressWithSeed, stakeIx, stakeSeed } from '../src/background/stake.js';
 import { internalKey, outputKey, taprootAddressOf, taprootScript, verifyKeyPath } from '../src/background/taproot.js';
 
 export const SEED_PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -37,11 +39,27 @@ export const SOL_TRANSFER = compileLegacy({ payer: ME.sol, blockhash: BLOCKHASH,
 // many transfers: a message longer than one APDU (the pieces' P2 flags)
 export const SOL_LONG = compileLegacy({ payer: ME.sol, blockhash: BLOCKHASH, instructions: Array.from({ length: 9 }, (_, i) => ix.transfer(ME.sol, base58Encode(new Uint8Array(32).fill(20 + i)), 1000n + BigInt(i))) });
 export const SOL_V0 = MessageV0.compile({ payerKey: new PublicKey(ME.sol), recentBlockhash: BLOCKHASH, instructions: [SystemProgram.transfer({ fromPubkey: new PublicKey(ME.sol), toPubkey: new PublicKey(TO), lamports: 4242 })] }).serialize();
+// staking as plum builds it: a stake account at an address derived from the wallet (createAccountWithSeed), so the
+// wallet is its only signer; then unstaking and withdrawing it
+const VOTE = base58Encode(new Uint8Array(32).fill(11));
+const STAKE_ACCOUNT = addressWithSeed(ME.sol, stakeSeed(0), STAKE_PROGRAM);
+const own = (instructions, units = 1000) => compileLegacy({ payer: ME.sol, blockhash: BLOCKHASH, instructions: [ix.unitLimit(units), ix.unitPrice(5000n), ...instructions] });
+export const SOL_STAKE = own([stakeIx.createWithSeed(ME.sol, STAKE_ACCOUNT, stakeSeed(0), 1_002_282_880n), stakeIx.initialize(STAKE_ACCOUNT, ME.sol), stakeIx.delegate(STAKE_ACCOUNT, VOTE, ME.sol)], 1500);
+export const SOL_UNSTAKE = own([stakeIx.deactivate(STAKE_ACCOUNT, ME.sol)]);
+export const SOL_WITHDRAW = own([stakeIx.withdraw(STAKE_ACCOUNT, ME.sol, 1_002_282_880n)]);
+// an NFT (a legacy Metaplex one) as plum sends it: the recipient's token account if it's missing, then TransferChecked
+const NFT_MINT = base58Encode(new Uint8Array(32).fill(12));
+export const SOL_NFT = own([
+  ix.createAtaIdempotent(ME.sol, associatedTokenAddress(TO, NFT_MINT, TOKEN_PROGRAM), TO, NFT_MINT, TOKEN_PROGRAM),
+  ix.transferChecked(associatedTokenAddress(ME.sol, NFT_MINT, TOKEN_PROGRAM), NFT_MINT, associatedTokenAddress(TO, NFT_MINT, TOKEN_PROGRAM), ME.sol, 1n, 0, TOKEN_PROGRAM),
+], 30_000);
 export const SOL_UNKNOWN = compileLegacy({ payer: ME.sol, blockhash: BLOCKHASH, instructions: [{ programId: base58Encode(new Uint8Array(32).fill(5)), keys: [{ pubkey: ME.sol, isSigner: true, isWritable: true }], data: Uint8Array.of(1, 2, 3) }] });
 
 export const ETH_TX = { nonce: 7n, maxPriorityFeePerGas: 1_000_000_000n, maxFeePerGas: 30_000_000_000n, gas: 21_000n, to: '0x000000000000000000000000000000000000dEaD', value: 10n ** 16n, data: '0x' };
 export const ETH_CALL = { nonce: 8n, maxPriorityFeePerGas: 1_000_000_000n, maxFeePerGas: 30_000_000_000n, gas: 60_000n, to: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', value: 0n, data: E.transferData('0x000000000000000000000000000000000000dEaD', 1_000_000n) };
-export const ETH_LONG_MESSAGE = utf8(`plum signs a long message: ${'abcdefghij'.repeat(40)}`);
+// the same transfer on Ethereum's other networks: only the chain id differs
+export const onNetwork = (chainId) => ({ ...ETH_TX, chainId });
+export const ETH_LONG_MESSAGE =utf8(`plum signs a long message: ${'abcdefghij'.repeat(40)}`);
 export const MAIL = E.parseTypedData({
   types: {
     EIP712Domain: [{ name: 'name', type: 'string' }, { name: 'version', type: 'string' }, { name: 'chainId', type: 'uint256' }, { name: 'verifyingContract', type: 'address' }],
@@ -142,9 +160,14 @@ export const SCENARIOS = [
   { name: 'sol a long transaction (pieces) needs blind signing', app: 'Solana', run: (l) => rejects(LS.signTransaction(l, SOL, SOL_LONG), 'blind-sign'), check: () => {} },
   { name: 'sol sign a message (ascii)', app: 'Solana', device: 'approve', run: (l) => LS.signOffchain(l, SOL, utf8('hello from plum, sign me'), base58Decode(ME.sol)), check: (r) => { assert.equal(r.signed.length, 85 + 24); assert.ok(verifySol(r.signature, r.signed, base58Decode(ME.sol))); } },
   { name: 'sol a message that is not ascii needs blind signing', app: 'Solana', run: (l) => rejects(LS.signOffchain(l, SOL, utf8('plum dit bonjour, ça va'), base58Decode(ME.sol)), 'blind-sign'), check: () => {} },
+  { name: 'sol sign a stake (create with seed, initialize, delegate)', app: 'Solana', device: 'approve', run: (l) => LS.signTransaction(l, SOL, SOL_STAKE), check: (r) => assert.ok(verifySol(r, SOL_STAKE, base58Decode(ME.sol))) },
+  { name: 'sol sign an unstake', app: 'Solana', device: 'approve', run: (l) => LS.signTransaction(l, SOL, SOL_UNSTAKE), check: (r) => assert.ok(verifySol(r, SOL_UNSTAKE, base58Decode(ME.sol))) },
+  { name: 'sol sign a stake withdrawal', app: 'Solana', device: 'approve', run: (l) => LS.signTransaction(l, SOL, SOL_WITHDRAW), check: (r) => assert.ok(verifySol(r, SOL_WITHDRAW, base58Decode(ME.sol))) },
+  { name: 'sol an NFT send needs blind signing', app: 'Solana', run: (l) => rejects(LS.signTransaction(l, SOL, SOL_NFT), 'blind-sign'), check: () => {} },
   { name: 'sol sign a long transaction (pieces), blind signing on', app: 'Solana', settings: ['blind'], device: 'approve', run: (l) => LS.signTransaction(l, SOL, SOL_LONG), check: (r) => assert.ok(SOL_LONG.length > 255 && verifySol(r, SOL_LONG, base58Decode(ME.sol))) },
   { name: 'sol sign an unknown program, blind signing on', app: 'Solana', settings: ['blind'], device: 'approve', run: (l) => LS.signTransaction(l, SOL, SOL_UNKNOWN), check: (r) => assert.ok(verifySol(r, SOL_UNKNOWN, base58Decode(ME.sol))) },
   { name: 'sol sign a message that is not ascii, blind signing on', app: 'Solana', settings: ['blind'], device: 'approve', run: (l) => LS.signOffchain(l, SOL, utf8('plum dit bonjour, ça va'), base58Decode(ME.sol)), check: (r) => { assert.equal(r.signed[16 + 1 + 32], 1); assert.ok(verifySol(r.signature, r.signed, base58Decode(ME.sol))); } },
+  { name: 'sol sign an NFT send (its token account, then TransferChecked), blind signing on', app: 'Solana', settings: ['blind'], device: 'approve', run: (l) => LS.signTransaction(l, SOL, SOL_NFT), check: (r) => assert.ok(verifySol(r, SOL_NFT, base58Decode(ME.sol))) },
   // Ethereum
   { name: 'eth app info', app: 'Ethereum', run: (l) => appInfo(l), check: (r) => assert.equal(r.name, 'Ethereum') },
   { name: 'eth settings', app: 'Ethereum', run: (l) => LE.config(l), check: (r) => assert.equal(typeof r.blindSigning, 'boolean') },
@@ -154,6 +177,9 @@ export const SCENARIOS = [
   { name: 'eth a contract call needs blind signing', app: 'Ethereum', run: (l) => rejects(LE.signTransaction(l, ETH, E.unsignedTx(ETH_CALL)), 'blind-sign'), check: () => {} },
   { name: 'eth personal_sign', app: 'Ethereum', device: 'approve', run: (l) => LE.signPersonal(l, ETH, utf8('Sign in to example.org with plum')), check: (r) => assert.equal(E.signerOf(E.personalDigest(utf8('Sign in to example.org with plum')), r), ME.eth) },
   { name: 'eth personal_sign, a long one (pieces)', app: 'Ethereum', device: 'approve', run: (l) => LE.signPersonal(l, ETH, ETH_LONG_MESSAGE), check: (r) => assert.equal(E.signerOf(E.personalDigest(ETH_LONG_MESSAGE), r), ME.eth) },
+  { name: 'eth sign a transfer on Base', app: 'Ethereum', device: 'approve', run: (l) => LE.signTransaction(l, ETH, E.unsignedTx(onNetwork(8453))), check: (r) => assert.equal(E.signerOf(E.txDigest(onNetwork(8453)), r), ME.eth) },
+  { name: 'eth sign a transfer on Polygon', app: 'Ethereum', device: 'approve', run: (l) => LE.signTransaction(l, ETH, E.unsignedTx(onNetwork(137))), check: (r) => assert.equal(E.signerOf(E.txDigest(onNetwork(137)), r), ME.eth) },
+  { name: 'eth sign a transfer on Arbitrum', app: 'Ethereum', device: 'approve', run: (l) => LE.signTransaction(l, ETH, E.unsignedTx(onNetwork(42161))), check: (r) => assert.equal(E.signerOf(E.txDigest(onNetwork(42161)), r), ME.eth) },
   { name: 'eth typed data without raw messages on', app: 'Ethereum', run: (l) => rejects(LE.signTyped(l, ETH, MAIL, E.typedHashes(MAIL), { version: '1.23.0' }), 'blind-sign'), check: () => {} },
   { name: 'eth typed data, field by field', app: 'Ethereum', settings: ['raw'], device: 'approve', run: (l) => LE.signTyped(l, ETH, MAIL, E.typedHashes(MAIL), { version: '1.23.0' }), check: (r) => { assert.equal(r.mode, 'fields'); assert.equal(E.signerOf(E.typedDigest(MAIL), r.sig), ME.eth); } },
   { name: 'eth a contract call with blind signing on', app: 'Ethereum', settings: ['blind'], device: 'approve', run: (l) => LE.signTransaction(l, ETH, E.unsignedTx(ETH_CALL)), check: (r) => assert.equal(E.signerOf(E.txDigest(ETH_CALL), r), ME.eth) },

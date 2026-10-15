@@ -87,6 +87,9 @@ try {
   stop();
 }
 if (RECORD && !failed) {
+  // in the scenarios' own order, whichever apps were run this time
+  record.apps = Object.fromEntries(Object.keys(FILES).filter((a) => record.apps[a]).map((a) => [a, record.apps[a]]));
+  record.scenarios = Object.fromEntries(SCENARIOS.filter((s) => record.scenarios[s.name]).map((s) => [s.name, record.scenarios[s.name]]));
   mkdirSync(dirname(OUT), { recursive: true });
   writeFileSync(OUT, `${JSON.stringify(record, null, 1)}\n`);
   console.log(`\nrecorded ${Object.keys(record.scenarios).length} scenarios to test/fixtures/ledger-speculos.json`);
