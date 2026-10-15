@@ -192,6 +192,27 @@ test("a Metaplex NFT is sent with the token program's own transfer, exactly as s
   await assert.rejects(planSolSend(nftRpc({ assets: { [mint]: a } }), OWNER, { id: mint, to: TO }), /isn't in this wallet's token accounts/);
 });
 
+test("a Bubblegum v2 tree: the leaf hashes Bubblegum's default collection and asset data, and the send is transferV2", async () => {
+  // Bubblegum's DEFAULT_COLLECTION_HASH (keccak of 32 zero bytes) and DEFAULT_ASSET_DATA_HASH (keccak of nothing)
+  const { keccak_256 } = await import('@noble/hashes/sha3.js');
+  assert.deepEqual([...keccak_256(new Uint8Array(32))], [41, 13, 236, 217, 84, 139, 98, 168, 214, 3, 69, 169, 136, 56, 111, 200, 75, 166, 188, 149, 72, 64, 8, 246, 54, 47, 147, 22, 14, 243, 229, 99]);
+  assert.deepEqual([...keccak_256(new Uint8Array(0))], [197, 210, 70, 1, 134, 247, 35, 60, 146, 126, 125, 178, 220, 199, 3, 192, 229, 0, 182, 83, 202, 130, 39, 59, 123, 250, 216, 4, 93, 133, 164, 112]);
+  const tree = key(), owner = key(), nonce = 3n;
+  const id = compressedAssetId(tree, nonce);
+  const dataHash = key(), creatorHash = key();
+  const proof = Array.from({ length: 14 }, key);
+  const asset = { ...structuredClone(FX.das.compressed), id, grouping: [], compression: { compressed: true, tree, leaf_id: 3, data_hash: dataHash, creator_hash: creatorHash }, ownership: { owner, delegate: null } };
+  const answer = (leaf) => ({ root: base58Encode(rootOf(leaf, proof, 3)), proof, leaf: base58Encode(leaf), tree_id: tree });
+  const rpcWith = (leaf) => nftRpc({ accounts: { [tree]: treeAccount(MPL_COMPRESSION) }, assets: { [id]: asset }, proofs: { [id]: answer(leaf) } });
+  const good = leafHash({ version: 2, id, owner, delegate: owner, nonce, dataHash, creatorHash, collectionHash: base58Encode(keccak_256(new Uint8Array(32))), assetDataHash: base58Encode(keccak_256(new Uint8Array(0))), flags: 0 });
+  const p = await planSolSend(rpcWith(good), owner, { id, to: TO });
+  assert.deepEqual([...p.instructions[0].data.subarray(0, 8)], [119, 40, 6, 235, 234, 221, 248, 49]);
+  assert.equal(p.instructions[0].keys[9].pubkey, MPL_COMPRESSION);
+  // a leaf made with zeros where Bubblegum hashes its defaults doesn't add up
+  const zeros = leafHash({ version: 2, id, owner, delegate: owner, nonce, dataHash, creatorHash, collectionHash: base58Encode(new Uint8Array(32)), assetDataHash: base58Encode(new Uint8Array(32)), flags: 0 });
+  await assert.rejects(planSolSend(rpcWith(zeros), owner, { id, to: TO }), /doesn't add up/);
+});
+
 test("Bubblegum's instructions are read back for previews: v1 and v2 transfers, burns and delegates", () => {
   const tree = key(), owner = key(), to = key();
   const v1 = nftIx.compressedTransfer({ owner, to, delegate: owner, tree, root: key(), dataHash: key(), creatorHash: key(), nonce: 77n, index: 77, proof: [key()] });

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { ed25519 } from '@noble/curves/ed25519.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { parseTransaction, recoverTransactionAddress } from 'viem';
 import { base58Decode, base58Encode } from '../src/shared/base58.js';
 import { b64decode, b64encode, u32le, u64le } from '../src/shared/bytes.js';
@@ -110,7 +111,9 @@ function compressed(depth, version = 'spl') {
   const id = compressedAssetId(tree, nonce);
   const dataHash = pk().toBase58(), creatorHash = pk().toBase58();
   const proof = Array.from({ length: depth }, () => pk().toBase58());
-  const leaf = leafHash({ id, owner: ME, delegate: ME, nonce, dataHash, creatorHash, version: version === 'spl' ? 1 : 2, collectionHash: base58Encode(new Uint8Array(32)), assetDataHash: base58Encode(new Uint8Array(32)), flags: 0 });
+  // a v2 leaf hashes its collection's key and its (empty) asset data too
+  const collectionHash = base58Encode(keccak_256(base58Decode(FX.das.compressed.grouping[0].group_value)));
+  const leaf = leafHash({ id, owner: ME, delegate: ME, nonce, dataHash, creatorHash, version: version === 'spl' ? 1 : 2, collectionHash, assetDataHash: base58Encode(keccak_256(new Uint8Array(0))), flags: 0 });
   const root = base58Encode(rootOf(leaf, proof, 7));
   const header = new Uint8Array(56);
   header[0] = 1;

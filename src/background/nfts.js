@@ -372,8 +372,13 @@ async function compressedPlan(rpc, owner, to, asset) {
   const group = (asset.grouping ?? []).find((g) => g?.group_key === 'collection' && isAddress(g.group_value));
   let extra = null;
   if (v2) {
-    const zero = b58(new Uint8Array(32));
-    extra = { collectionHash: c.collection_hash || zero, assetDataHash: c.asset_data_hash || zero, flags: Number(c.flags ?? 0) };
+    // a v2 leaf also hashes its collection (keccak of its key, or of 32 zero bytes for none), its asset data (keccak of
+    // the data, empty for none) and its flags
+    extra = {
+      collectionHash: c.collection_hash || b58(keccak_256(group ? base58Decode32(group.group_value) : new Uint8Array(32))),
+      assetDataHash: c.asset_data_hash || b58(keccak_256(new Uint8Array(0))),
+      flags: Number(c.flags ?? 0),
+    };
   }
   const leaf = leafHash({ ...fields, version: v2 ? 2 : 1, ...(extra ?? {}) });
   const nodes = Array.isArray(proof?.proof) ? proof.proof : [];
