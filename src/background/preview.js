@@ -11,7 +11,7 @@ import { b64decode, b64encode, readU32, readU64 } from '../shared/bytes.js';
 import { short, prettyAmount } from '../shared/format.js';
 import { programName } from '../shared/programs.js';
 import {
-  SIGNATURE_FEE, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, WSOL_MINT, computeBudgetOf, feeOf, isSigned, isStaticWritable, readTx, signersOf,
+  SIGNATURE_FEE, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, WSOL_MINT, budgetInstructions, computeBudgetOf, feeOf, isSigned, isStaticWritable, readTx, signersOf,
 } from '../shared/tx.js';
 
 const ALT_PROGRAM = 'AddressLookupTab1e1111111111111111111111111';
@@ -210,10 +210,17 @@ export async function previewTx(input, { owner, rpc, meta }) {
     w.add('danger', "the RPC's simulation came back incomplete, so plum can't tell you what this does. Don't sign it unless you trust the site completely.", 'sim');
   }
 
-  // the fee, and any priority fee hidden in it
-  const fee = sim.fee != null ? BigInt(sim.fee) : feeOf(t);
+  // the fee, and any priority fee hidden in it. A v1 transaction's is set by its header, so an RPC's word can add to it
+  // (signatures checked by precompiles) but never take from it
+  let fee = sim.fee != null ? BigInt(sim.fee) : feeOf(t);
+  if (t.version === 1 && fee < feeOf(t)) fee = feeOf(t);
   const priority = fee > SIGNATURE_FEE * BigInt(t.required) ? fee - SIGNATURE_FEE * BigInt(t.required) : budget.priorityLamports;
   if (priority > BIG_PRIORITY) w.add('warn', `it pays a priority fee of ${prettyAmount(priority, 9)} SOL`);
+  // a v1 transaction ignores compute-budget instructions: one there makes it read as cheaper than it is, to anything
+  // that still looks for them
+  if (t.version === 1 && budgetInstructions(t, programOf).length) {
+    w.add('info', `it carries compute-budget instructions, which do nothing in a v1 transaction: its priority fee is the ${prettyAmount(budget.priorityLamports, 9)} SOL set in its header`);
+  }
 
   const post = complete ? sim.accounts : [];
   const byAddr = (list) => new Map(watch.map((a, i) => [a, list[i] ?? null]));
@@ -338,6 +345,8 @@ export async function previewTx(input, { owner, rpc, meta }) {
     writable: writable.length,
     fee: fee.toString(),
     priority: priority.toString(),
+    // a v1 transaction's compute budget, as its header sets it (null for what it leaves out)
+    config: t.version === 1 ? { units: t.config.computeUnitLimit, priorityFee: t.config.priorityFee?.toString() ?? null, loadedData: t.config.loadedAccountsDataSizeLimit, heap: t.config.heapSize } : null,
     sol: solDelta.toString(),
     wrappedSol: wrapped.toString(),
     tokens,

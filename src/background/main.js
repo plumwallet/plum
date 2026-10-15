@@ -13,7 +13,7 @@ import { formatUnits, parseUnits, short } from '../shared/format.js';
 import { associatedTokenAddress, isOnCurve } from '../shared/pda.js';
 import { hasHidden } from '../shared/text.js';
 import {
-  MAX_TX_BYTES, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, WSOL_MINT, compileLegacy, isSigned, isTransactionShaped, ix, readTx, signersOf,
+  MAX_V1_TX_BYTES, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, WSOL_MINT, compileLegacy, isSigned, isTransactionShaped, ix, maxTxBytes, readTx, signersOf,
   startsLikeTransaction, unsignedTx, withSignature,
 } from '../shared/tx.js';
 import * as B from './btc.js';
@@ -435,9 +435,9 @@ async function followOther(chain, id) {
 function decodeTxs(list, owner) {
   if (!Array.isArray(list) || !list.length || list.length > MAX_TXS) throw fail(`send between 1 and ${MAX_TXS} transactions`);
   return list.map((b64) => {
-    if (typeof b64 !== 'string' || b64.length > 4000) throw fail('a transaction is malformed');
+    if (typeof b64 !== 'string' || b64.length > Math.ceil(MAX_V1_TX_BYTES / 3) * 4) throw fail('a transaction is malformed');
     const bytes = b64decode(b64);
-    if (bytes.length > MAX_TX_BYTES) throw fail(`a transaction is ${bytes.length} bytes, more than the ${MAX_TX_BYTES} Solana allows`);
+    if (bytes.length > maxTxBytes(bytes)) throw fail(`a transaction is ${bytes.length} bytes, more than the ${maxTxBytes(bytes)} Solana allows`);
     let t;
     try { t = readTx(bytes); } catch (e) { throw fail(`Plum can't read this transaction: ${e.message}`); }
     if (!signersOf(t).includes(owner)) throw fail("this transaction doesn't ask for the connected account's signature");
@@ -1132,7 +1132,7 @@ async function prepareSwap({ quoteId }) {
   // the same rule plum's own sends follow: one signer, you; you pay; nothing signed before you
   if (t.required !== 1 || signersOf(t)[0] !== me) throw fail(`Jupiter's swap asks for ${t.required} signatures; plum only signs swaps you alone sign`);
   if (t.signatures.some(isSigned)) throw fail("Jupiter's swap arrived already signed; plum won't use it");
-  if (t.size > MAX_TX_BYTES) throw fail('the swap is too large to send');
+  if (t.size > maxTxBytes(t.bytes)) throw fail('the swap is too large to send');
   const preview = await previewTx(bytes, { owner: me, rpc, meta: namer(network) });
   // a swap is plum's own request, so there's no "sign anyway": anything wrong with it and plum refuses it outright
   if (!preview.sim.ok) throw fail(`the swap would fail (${preview.sim.error}): get a new quote`);

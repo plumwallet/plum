@@ -329,6 +329,7 @@ function details(p) {
       kv('signers', p.signers.map((s) => short(s)).join(', ')),
       p.sim.units != null ? kv('compute used', p.sim.units.toLocaleString('en-US')) : null,
       kv('priority fee', `${prettyAmount(BigInt(p.priority), 9, { sig: 9 })} SOL`),
+      p.config ? kv('compute limit', (p.config.units ?? 0).toLocaleString('en-US')) : null,
       BigInt(p.wrappedSol ?? 0) !== 0n ? kv('wrapped SOL in that', `${prettyAmount(BigInt(p.wrappedSol), 9)} SOL`) : null),
     h('ol', { class: 'ixs' }, p.instructions.map((ix) => h('li', null, h('b', null, ix.name ?? short(ix.program, 6)), h('span', { class: 'dim' }, ` ${ix.accounts} accounts · ${ix.bytes} bytes`)))),
     p.sim.logs?.length ? h('pre', { class: 'logs' }, p.sim.logs.join('\n')) : null);

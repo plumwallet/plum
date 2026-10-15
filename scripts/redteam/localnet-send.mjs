@@ -71,7 +71,7 @@ console.log('> confirmed on localnet:', status.confirmationStatus);
 
 // read it back from the chain and check exactly one signature slot
 let tx = null;
-for (let i = 0; i < 30; i++) { tx = await rpc('getTransaction', [done.signature, { encoding: 'base64', commitment: 'confirmed', maxSupportedTransactionVersion: 0 }]); if (tx.result) break; await sleep(500); }
+for (let i = 0; i < 30; i++) { tx = await rpc('getTransaction', [done.signature, { encoding: 'base64', commitment: 'confirmed', maxSupportedTransactionVersion: 1 }]); if (tx.result) break; await sleep(500); }
 assert.ok(tx.result, 'the transaction is on chain');
 const sigCount = readTx(b64decode(tx.result.transaction[0])).signatures.length;
 assert.equal(sigCount, 1, 'the on-chain transaction has exactly one signature slot');
