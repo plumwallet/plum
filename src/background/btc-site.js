@@ -153,6 +153,7 @@ export function bitcoinSites({ approval, trusted, trust, untrust, riskOf, openWe
       }
       // (never the wallet's name: this page isn't connected)
       if (!me) throw err("Plum's active wallet has no Bitcoin address: switch to another wallet in plum, then connect again", CODES.ACCESS_DENIED);
+      if (p.network != null && String(p.network).toLowerCase() !== 'mainnet') throw err('Plum is on Bitcoin mainnet only', CODES.INVALID_PARAMS);
       const purposes = purposesOf(p);
       const risk = await riskOf(origin);
       if (connected && risk.level !== 'blocked') await trust(origin, me, 'btc');
@@ -237,9 +238,11 @@ export function bitcoinSites({ approval, trusted, trust, untrust, riskOf, openWe
     let review;
     try {
       const mineAt = reviewPsbt(psbt, { owner, toSign: r.toSign }).inputs.filter((x) => x.sign);
-      const contents = await contentsOf(mineAt.map((x) => ({ txid: x.txid, vout: x.vout }))).catch(() => null);
+      const contents = await contentsOf(mineAt.map((x) => ({ txid: x.txid, vout: x.vout }))).catch(() => new Map());
       review = reviewPsbt(psbt, { owner, toSign: r.toSign, chain, contents, rates });
-      if (!contents && mineAt.some((x) => x.mine === 'p2tr')) review.warnings.push({ level: 'warn', text: "plum couldn't check this wallet's coins in it for inscriptions or runes (the indexer didn't answer)" });
+      // a coin no indexer answered for is unknown, never empty
+      const unknown = mineAt.filter((x) => !contents.has(`${x.txid}:${x.vout}`));
+      if (unknown.length) review.warnings.push({ level: 'warn', text: `plum couldn't check ${unknown.length === 1 ? `input ${unknown[0].index}` : `${unknown.length} of the inputs it signs`} for inscriptions or runes (the indexers didn't answer): if ${unknown.length === 1 ? 'it carries' : 'they carry'} some, signing can send them away` });
     } catch (e) {
       r.review = { error: e.message };
       return { chain: 'btc', kind: 'psbt', error: e.message };
@@ -255,6 +258,8 @@ export function bitcoinSites({ approval, trusted, trust, untrust, riskOf, openWe
       if (r.kind === 'btcMessage' && (r.btcView.text == null || r.btcView.problems?.length) && !ignoreRisk) throw err('this message carries a danger: tick "i understand" to sign it anyway');
       return;
     }
+    // the preview the window asked for (main.js keeps its promise), or one now
+    if (!r.review) await (r.previews ?? preview(r));
     if (!r.review) await preview(r);
     if (r.review.error) throw err(r.review.error);
     if (r.review.warnings.some((w) => w.level === 'danger') && !ignoreRisk) throw err('this carries a danger: tick "i understand" to sign it anyway');

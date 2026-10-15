@@ -119,6 +119,7 @@ test('withstood: oversized and malformed requests are refused in words, nothing 
   assert.match((await ask(page, 'sendTransfer', { recipients: [{ address: TAPROOT, amount: 1.5 }] })).error.message, /whole number of sats/);
   assert.match((await ask(page, 'sendTransfer', { recipients: [{ address: TAPROOT, amount: -5 }] })).error.message, /whole number of sats/);
   assert.match((await ask(page, 'getAddresses', { purposes: Array(50).fill('payment') })).error.message, /malformed/);
+  assert.match((await ask(page, 'wallet_connect', { network: 'Testnet' })).error.message, /mainnet only/);
   assert.equal((await page.request('btc', { params: {} })).error.code, -32600);
   assert.equal([..._test.pending.values()].length, 0);
 });

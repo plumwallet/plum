@@ -39,10 +39,11 @@ async function approveIt(kind, { ignoreRisk = false } = {}) {
   await ok('approval.resolve', { id: r.id, approve: true, ignoreRisk });
   return { view, previews };
 }
-/** Record the coins of a PSBT on the stand-in chain, so plum can check them. */
+/** Record the coins of a PSBT on the stand-in chain (and as plain coins on the indexer), so plum can check them. */
 function onChain(built) {
   for (const [op, prev] of built.chain) {
     if (!prev) continue;
+    net.ord.utxos.set(op, {});
     const [txid, vout] = op.split(':');
     const outs = net.btc.txs.get(txid) ?? [];
     outs[Number(vout)] = { scriptpubkey: hex(prev.script), value: Number(prev.value) };

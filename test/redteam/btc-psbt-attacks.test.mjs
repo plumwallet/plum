@@ -195,6 +195,12 @@ test('withstood: an inscription the PSBT would hand to the miners is named; plum
   const { r, preview } = await review({ psbt: built.b64 });
   assert.ok(preview.warnings.some((w) => w.level === 'danger' && /inscription.*ends up in the network fee \(lost to a miner\)/.test(w.text)), JSON.stringify(preview.warnings));
   await reject(r);
+  // the indexers not answering for a coin plum would sign: unknown, said in words, never taken as empty
+  const dark = buildPsbt({ inputs: [{ txid: txidOf('dark coin'), vout: 0, value: 10_000n, script: TR_SCRIPT }], outputs: [{ address: MERCHANT, value: 9_000n }] });
+  onChain(dark);
+  const d = await review({ psbt: dark.b64 });
+  assert.ok(d.preview.warnings.some((w) => w.level === 'warn' && /couldn't check input 0 for inscriptions or runes/.test(w.text)), JSON.stringify(d.preview.warnings));
+  await reject(d.r);
   // plum's own send: the inscribed taproot coin is kept out, the plain one spent
   net.btc.utxos.set(SEGWIT, [{ txid: 'c1'.repeat(32), vout: 0, value: 80_000 }]);
   net.btc.utxos.set(TAPROOT, [{ txid: 'c2'.repeat(32), vout: 1, value: 900_000 }]);
