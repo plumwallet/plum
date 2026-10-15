@@ -8,11 +8,15 @@ or a log line.
 ## What it lets through
 
 - **One JSON-RPC call per request**, no batches, as `application/json`, at most 32 KB.
-- **Only the eleven methods plum calls**, each with its params in the shape Solana takes them: `getAccountInfo`,
+- **Only the methods plum calls**, each with its params in the shape Solana takes them: `getAccountInfo`,
   `getBalance`, `getBlockHeight`, `getLatestBlockhash`, `getMultipleAccounts` (100 accounts at most),
   `getRecentPrioritizationFees`, `getSignatureStatuses`, `getSignaturesForAddress`, `getTokenAccountsByOwner`,
-  `sendTransaction` and `simulateTransaction` (a transaction of 4096 bytes at most: a v1 one; legacy and v0 stop at 1232). `test/rpc-proxy.test.mjs` checks
-  this list against every call in `src/background/`, so the wallet and the proxy can't drift apart.
+  `sendTransaction` and `simulateTransaction` (a transaction of 4096 bytes at most: a v1 one; legacy and v0 stop at
+  1232); for staking `getEpochInfo`, `getVoteAccounts`, `getBlockProduction`, `getInflationReward`,
+  `getStakeMinimumDelegation`, `getMinimumBalanceForRentExemption` and `getProgramAccounts` (only stake accounts by
+  their staker or withdrawer, and the validator-info accounts); for NFTs the DAS methods `getAssetsByOwner`,
+  `getAsset`, `getAssetBatch` and `getAssetProof`, with their named params. `test/rpc-proxy.test.mjs` checks this list
+  against every call in `src/background/`, so the wallet and the proxy can't drift apart.
 - **Only from a browser extension**: an `Origin` of `moz-extension://<uuid>` or `chrome-extension://<id>`, which no
   web page can send. Pages and scripts get 403, so no site can use plum's RPC as its own through its visitors' browsers.
 - **The call is written afresh** before it goes on: none of the caller's headers, address or bytes go with it, so the
