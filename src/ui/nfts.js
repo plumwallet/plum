@@ -6,6 +6,7 @@ import { call } from './api.js';
 import { active, errLine, field, forget, go, redraw, screen, show, showErr } from './app.js';
 import { busyButton, h } from './dom.js';
 import { netOf } from './evm.js';
+import { APP, deviceBox, isLedgerWallet } from './ledger.js';
 import { CHAIN, actions, addressBlock, box, chainsOf, kv, previewBlock, seg, spinner } from './parts.js';
 
 const STANDARD = { legacy: 'Metaplex NFT', programmable: 'programmable NFT', core: 'Core asset', compressed: 'compressed NFT', erc721: 'ERC-721', erc1155: 'ERC-1155' };
@@ -119,14 +120,18 @@ function review(prep, n, back) {
   const next = h('button', { class: 'btn-go block lg', type: 'button', dataset: { busyText: 'signing' }, disabled: dangers }, 'send it ->');
   ack.addEventListener('click', () => { const on = !ack.classList.contains('on'); ack.classList.toggle('on', on); ack.setAttribute('aria-pressed', String(on)); next.disabled = !on; });
   const err = errLine();
+  // a Ledger signs it after this: its state, live, while plum waits on it
+  const device = isLedgerWallet(active()) ? deviceBox(APP[n.chain], { hidden: true }) : null;
   busyButton(next, async () => {
     err.hidden = true;
+    device?.watch();
     try {
       const done = await call('nfts.submit', { id: prep.id });
+      device?.stop();
       forget();
       lists.clear();
       go.sent(done);
-    } catch (e) { showErr(err, e); }
+    } catch (e) { if (!device?.failed(e)) showErr(err, e); }
   });
   const to = prep.summary?.to ?? '';
   show(...screen('review', null,
@@ -139,5 +144,5 @@ function review(prep, n, back) {
       n.chain === 'eth' ? kv('on', whereOf(n), 'loud') : kv('on', CHAIN[n.chain].name),
       addressBlock(to)),
     previewBlock(prep.preview, { extra: prep.warnings }),
-    dangers ? ack : null, err, actions(back, next)));
+    device?.node, dangers ? ack : null, err, actions(back, next)));
 }

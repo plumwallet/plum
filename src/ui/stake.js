@@ -5,6 +5,7 @@ import { formatUnits, prettyAmount, short } from '../shared/format.js';
 import { call } from './api.js';
 import { active, ctx, errLine, field, forget, go, show, screen, showErr } from './app.js';
 import { busyButton, h } from './dom.js';
+import { deviceBox, isLedgerWallet } from './ledger.js';
 import { lidoScreen, stakeNetSeg } from './lido.js';
 import { actions, addressBlock, box, kv, previewBlock, spinner } from './parts.js';
 
@@ -208,13 +209,17 @@ function review(prep, { validator = null, back }) {
   const next = h('button', { class: 'btn-go block lg', type: 'button', dataset: { busyText: 'signing' }, disabled: dangers }, VERB[s.action]);
   ack.addEventListener('click', () => { const on = !ack.classList.contains('on'); ack.classList.toggle('on', on); ack.setAttribute('aria-pressed', String(on)); next.disabled = !on; });
   const err = errLine();
+  // a Ledger signs it after this: its state, live, while plum waits on it
+  const device = isLedgerWallet(active()) ? deviceBox('Solana', { hidden: true }) : null;
   busyButton(next, async () => {
     err.hidden = true;
+    device?.watch();
     try {
       const done = await call('stake.submit', { id: prep.id });
+      device?.stop();
       forget();
       go.sent(done);
-    } catch (e) { showErr(err, e); }
+    } catch (e) { if (!device?.failed(e)) showErr(err, e); }
   });
   const v = validator ?? (s.vote ? { vote: s.vote } : null);
   const summary = {
@@ -239,5 +244,5 @@ function review(prep, { validator = null, back }) {
   }[s.action]();
   show(...screen('review', null, summary,
     previewBlock(prep.preview, { extra: prep.warnings }),
-    dangers ? ack : null, err, actions(back, next)));
+    device?.node, dangers ? ack : null, err, actions(back, next)));
 }
