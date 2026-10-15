@@ -10,6 +10,8 @@ import { active, accountOf, ctx, errLine, field, forget, go, header, redraw, ref
 import { logo } from './art.js';
 import { busyButton, h, mount } from './dom.js';
 import { btcAddressOf, btcReceivePick } from './btc.js';
+import { evmRpcField, netTag, networkErrors, networkHoldings, networkCoins, networkRow } from './evm.js';
+import { evmSwapScreen, swapNetSeg, swapNetwork } from './evm-swap.js';
 import { backupLater, welcome } from './flows.js';
 import { CHAIN, actions, addressBlock, box, chainsOf, coinMark, iconArt, kv, previewBlock, rule, secretField, seg, spinner } from './parts.js';
 import { qrAscii } from './qr.js';
@@ -90,6 +92,7 @@ function holdingsOf(w) {
     const b = ctx.bal.get(balKey(w, c));
     if (!b) continue;
     coins.push({ chain: c, mint: null, symbol: CHAIN[c].ticker, name: CHAIN[c].name, amount: b.native.amount, decimals: b.native.decimals, price: b.native.price, usd: b.native.usd, verified: true });
+    if (c === 'eth') coins.push(...networkHoldings(b));
     tokens.push(...b.tokens.map((t) => ({ ...t, chain: c })));
   }
   return { coins, tokens };
@@ -142,11 +145,11 @@ function home() {
     // the total: every chain's dollars, once each has answered (a chain that failed counts as unknown)
     const done = chains.every((c, i) => got[i] || failed.has(c));
     const priced = ready.length && ready.every((b) => b.native.price != null);
-    const total = ready.reduce((n, b) => n + (b.native.usd ?? 0) + b.tokens.reduce((m, t) => m + (t.usd ?? 0), 0), 0);
-    // today's move, weighted by what each coin is worth
-    const weights = ready.filter((b) => b.native.usd && b.native.change24h != null);
-    const worth = weights.reduce((n, b) => n + b.native.usd, 0);
-    const change = worth ? weights.reduce((n, b) => n + b.native.change24h * b.native.usd, 0) / worth : null;
+    const total = ready.reduce((n, b) => n + (b.native.usd ?? 0) + (b.networks ?? []).reduce((m, x) => m + (x.usd ?? 0), 0) + b.tokens.reduce((m, t) => m + (t.usd ?? 0), 0), 0);
+    // today's move, weighted by what each coin is worth (the other Ethereum networks' coins too)
+    const weights = ready.flatMap((b) => [b.native, ...(b.networks ?? [])]).filter((x) => x.usd && x.change24h != null);
+    const worth = weights.reduce((n, x) => n + x.usd, 0);
+    const change = worth ? weights.reduce((n, x) => n + x.change24h * x.usd, 0) / worth : null;
     if (!done) mount(bal, h('span', { class: 'bal-l' }, priced ? h('b', null, dollars(total)) : null, reading()));
     else if (priced) {
       mount(bal,
@@ -156,9 +159,10 @@ function home() {
       const sol = ctx.bal.get(balKey(w, 'sol'));
       mount(bal, h('span', { class: 'bal-l' }, h('b', null, sol ? `${prettyAmount(BigInt(sol.native.amount), 9)} SOL` : '?')));
     }
-    coins.replaceChildren(...chains.map((c) => {
+    coins.replaceChildren(...chains.flatMap((c) => {
       const b = ctx.bal.get(balKey(w, c));
-      if (b) return coinRow(c, b);
+      // Ethereum's ETH, then the other networks' coins where there's something
+      if (b) return [coinRow(c, b), ...networkCoins(b).map((n) => networkRow(n, sendScreen))];
       return h('div', { class: 'tk' }, coinMark(c), h('span', { class: 'tk-n' }, h('b', null, CHAIN[c].ticker), h('span', { class: 'dim' }, CHAIN[c].name)), h('span', { class: 'tk-v' }, failed.has(c) ? h('b', { class: 't-red', title: failed.get(c) }, '?') : h('b', null, spinner())));
     }));
     const tokens = ready.flatMap((b) => b.tokens.map((t) => ({ ...t, chain: b.chain }))).sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1));
@@ -167,7 +171,8 @@ function home() {
     const sol = ctx.bal.get(balKey(w, 'sol'));
     warn.hidden = !sol?.hijacked;
     if (sol?.hijacked) warn.replaceChildren(h('div', { class: 'note err lvl-danger' }, `this wallet's Solana account was handed to a program (${short(sol.hijacked)}), the way drainers take wallets over. It can't send or pay fees any more. Don't send anything to it; move to a new wallet.`));
-    if (failed.size && done) showErr(err, [...failed].map(([c, m]) => `${CHAIN[c].name}: ${m}`).join(' · '));
+    const others = done ? networkErrors(ctx.bal.get(balKey(w, 'eth'))) : [];
+    if ((failed.size || others.length) && done) showErr(err, [...[...failed].map(([c, m]) => `${CHAIN[c].name}: ${m}`), ...others].join(' · '));
     else err.hidden = true;
   };
   paint();
@@ -203,8 +208,9 @@ function coinRow(chain, b) {
 /** A token in a line: no picture, just its ticker and name (and its chain, when the wallet has more than one), amount
  * and value. An unverified one shows its address: anyone can call a token "USDC". */
 function tokenRow(t, tagged) {
-  const where = tagged ? h('span', { class: 'chain-tag' }, ` ${t.chain}`) : null;
-  return h('button', { class: 'tk plain', type: 'button', title: `send ${t.symbol ?? 'this token'}`, onclick: () => sendScreen({ chain: t.chain, mint: t.mint }) },
+  // a token on one of Ethereum's other networks always says which
+  const where = tagged || (t.net && t.net !== 'ethereum') ? h('span', { class: 'chain-tag' }, ` ${t.net ? netTag(t.net) : t.chain}`) : null;
+  return h('button', { class: 'tk plain', type: 'button', title: `send ${t.symbol ?? 'this token'}`, onclick: () => sendScreen({ chain: t.chain, mint: t.mint, net: t.net }) },
     h('span', { class: 'tk-n' }, h('b', null, t.symbol ?? short(t.mint)),
       t.symbol && !t.verified ? h('span', { class: 'dim' }, h('span', { class: 'unv' }, 'unverified '), short(t.mint), where) : h('span', { class: 'dim' }, t.name ?? short(t.mint, 6), where)),
     h('span', { class: 'tk-v' }, h('b', null, prettyAmount(BigInt(t.amount), t.decimals)), h('span', { class: 'dim' }, usd(t.usd))));
@@ -217,7 +223,7 @@ function tokenRow(t, tagged) {
 function picker(items, onPick, { title = 'pick a token', search = false, back = null, tagged = false } = {}) {
   const row = (t) => h('button', { class: t.mint == null || (t.chain === 'sol' && isSol(t.mint)) ? 'tk' : 'tk plain', type: 'button', onclick: () => onPick(t) },
     t.mint == null || (t.chain === 'sol' && isSol(t.mint)) ? coinMark(t.chain ?? 'sol') : null,
-    h('span', { class: 'tk-n' }, h('b', null, t.symbol ?? short(t.mint)), h('span', { class: 'dim' }, t.verified === false ? h('span', { class: 'unv' }, 'unverified ') : null, t.name ?? short(t.mint ?? '', 6), tagged && t.mint ? h('span', { class: 'chain-tag' }, ` ${t.chain}`) : null)),
+    h('span', { class: 'tk-n' }, h('b', null, t.symbol ?? short(t.mint)), h('span', { class: 'dim' }, t.verified === false ? h('span', { class: 'unv' }, 'unverified ') : null, t.name ?? short(t.mint ?? '', 6), (tagged || (t.net && t.net !== 'ethereum')) && t.mint ? h('span', { class: 'chain-tag' }, ` ${t.net ? netTag(t.net) : t.chain}`) : null)),
     h('span', { class: 'tk-v' }, t.amount != null ? h('b', null, prettyAmount(BigInt(t.amount), t.decimals)) : h('span', { class: 'dim' }, short(t.mint ?? 'SOL', 4))));
   const coinRows = h('div', { class: 'tks' });
   const results = h('div', { class: 'tks' });
@@ -250,11 +256,11 @@ function picker(items, onPick, { title = 'pick a token', search = false, back = 
 }
 
 /** The coin or token a form uses, as a typed button: its ticker and a caret, no picture. */
-const tokenButton = (t, onclick) => h('button', { class: 'tok-btn', type: 'button', onclick }, h('b', null, t.symbol ?? short(t.mint)), h('span', { class: 'caret' }, 'v'));
+const tokenButton = (t, onclick) => h('button', { class: 'tok-btn', type: 'button', onclick }, h('b', null, t.symbol ?? short(t.mint)), t.net && t.net !== 'ethereum' ? h('span', { class: 'dim' }, netTag(t.net)) : null, h('span', { class: 'caret' }, 'v'));
 
 /* ------------------------------------------------------------ send */
 
-async function sendScreen({ chain = null, mint = null, to = '', amount = '', speed = 'normal' } = {}) {
+async function sendScreen({ chain = null, mint = null, net = null, to = '', amount = '', speed = 'normal' } = {}) {
   const w = active();
   let items;
   try {
@@ -262,7 +268,9 @@ async function sendScreen({ chain = null, mint = null, to = '', amount = '', spe
     items = [...coins, ...tokens];
     if (!items.length) throw new Error("couldn't read what this wallet holds: try again");
   } catch (e) { show(...screen('send', () => home(), h('div', { class: 'note err' }, e.message))); return; }
-  let token = items.find((t) => t.chain === (chain ?? t.chain) && (t.mint ?? null) === (mint ?? null)) ?? items[0];
+  // (Ethereum's own coin and tokens may come with net 'ethereum' or none)
+  const sameNet = (t) => (t.net ?? 'ethereum') === (net ?? 'ethereum');
+  let token = items.find((t) => t.chain === (chain ?? t.chain) && (t.mint ?? null) === (mint ?? null) && (t.chain !== 'eth' || sameNet(t))) ?? items[0];
   let btcSpeed = speed;
   const toIn = h('input', { class: 'input', spellcheck: 'false', autocomplete: 'off', value: to });
   const amtIn = h('input', { class: 'input', inputmode: 'decimal', placeholder: '0', autocomplete: 'off', value: amount });
@@ -290,7 +298,7 @@ async function sendScreen({ chain = null, mint = null, to = '', amount = '', spe
         if (!token.mint) raw = raw > 20_000n ? raw - 20_000n : 0n; // leave the fee
         amtIn.value = formatUnits(raw, token.decimals);
       } else {
-        amtIn.value = await call('send.max', { chain: token.chain, token: token.mint, to: toIn.value.trim() || null, speed: btcSpeed });
+        amtIn.value = await call('send.max', { chain: token.chain, net: token.net ?? null, token: token.mint, to: toIn.value.trim() || null, speed: btcSpeed });
       }
       paint();
     } catch (e) { showErr(err, e); }
@@ -303,9 +311,9 @@ async function sendScreen({ chain = null, mint = null, to = '', amount = '', spe
   const next = h('button', { class: 'btn-go block', type: 'button', dataset: { busyText: 'simulating' } }, 'review ->');
   busyButton(next, async () => {
     err.hidden = true;
-    const asked = { chain: token.chain, mint: token.mint, to: toIn.value.trim(), amount: amtIn.value.trim(), speed: btcSpeed };
+    const asked = { chain: token.chain, mint: token.mint, net: token.net ?? null, to: toIn.value.trim(), amount: amtIn.value.trim(), speed: btcSpeed };
     try {
-      const prep = await call('send.prepare', { chain: asked.chain, token: asked.mint, to: asked.to, amount: asked.amount, speed: asked.speed });
+      const prep = await call('send.prepare', { chain: asked.chain, net: asked.net, token: asked.mint, to: asked.to, amount: asked.amount, speed: asked.speed });
       review(prep, { kind: 'send', back: () => sendScreen(asked) });
     } catch (e) { showErr(err, e); }
   });
@@ -337,7 +345,7 @@ function review(prep, { kind, back }) {
     } catch (e) { showErr(err, e); }
   });
   const summary = kind === 'send'
-    ? box('sending', { tone: 'ink' }, kv('amount', `${prep.amount} ${prep.symbol}`), kv('to', short(prep.to, 6)), kv('on', CHAIN[prep.chain ?? 'sol'].name), addressBlock(prep.to))
+    ? box('sending', { tone: 'ink' }, kv('amount', `${prep.amount} ${prep.symbol}`), kv('to', short(prep.to, 6)), prep.netTitle ? kv('on', prep.netTitle.toLowerCase(), 'loud') : kv('on', CHAIN[prep.chain ?? 'sol'].name), addressBlock(prep.to))
     : box('swapping', { tone: 'ink' }, kv('you pay', `${prep.inAmount} ${prep.inSymbol}`), kv('you get (about)', `${prep.outAmount} ${prep.outSymbol}`), kv('at least', `${prep.minOut} ${prep.outSymbol}`));
   show(...screen('review', null, summary,
     previewBlock(prep.preview, { extra: prep.warnings }),
@@ -345,7 +353,7 @@ function review(prep, { kind, back }) {
 }
 
 /** After a send: plum's log of it, the last line turning until it lands. */
-function sentScreen({ signature, explorer, chain = 'sol' }) {
+function sentScreen({ signature, explorer, chain = 'sol', explorerName = null }) {
   const status = h('span', { class: 'r' }, spinner());
   const landing = { sol: 'landing on chain', eth: 'in a block', btc: 'first confirmation' }[chain];
   const log = h('ol', { class: 'log' },
@@ -354,7 +362,7 @@ function sentScreen({ signature, explorer, chain = 'sol' }) {
     h('li', null, h('span', null, landing), status));
   const note = chain === 'btc' ? h('p', { class: 'fine' }, 'bitcoin confirms in about ten minutes; you can close plum, it carries on without it.') : null;
   show(...screen('sent', null, log, note,
-    h('div', { class: 'actions' }, h('a', { class: 'btn', href: explorer, target: '_blank', rel: 'noreferrer noopener' }, CHAIN[chain].explorer), h('button', { class: 'btn-go', type: 'button', onclick: () => home() }, 'done ->'))));
+    h('div', { class: 'actions' }, h('a', { class: 'btn', href: explorer, target: '_blank', rel: 'noreferrer noopener' }, explorerName ?? CHAIN[chain].explorer), h('button', { class: 'btn-go', type: 'button', onclick: () => home() }, 'done ->'))));
   const until = Date.now() + (chain === 'btc' ? 30 * 60_000 : chain === 'eth' ? 180_000 : 90_000);
   const tick = async () => {
     if (!status.isConnected) return;
@@ -387,6 +395,7 @@ function receiveScreen(chain = null, btcKind = 'p2wpkh') {
     on === 'btc' ? btcReceivePick(w, btcKind, (k) => receiveScreen('btc', k)) : null,
     h('div', { class: 'qr-box' }, qrAscii(address)),
     addressBlock(address, { copy: true }),
+    on === 'eth' ? h('p', { class: 'fine center' }, 'the same address on ethereum, base, arbitrum and polygon') : null,
     cp));
 }
 
@@ -394,7 +403,10 @@ function receiveScreen(chain = null, btcKind = 'p2wpkh') {
 
 async function swapScreen(prefill = {}) {
   const w = active();
-  if (!w.chains.sol) { show(...screen('swap', () => home(), h('div', { class: 'note' }, `swaps happen on Solana, and ${w.name} has no Solana address (it's an imported key).`))); return; }
+  // Solana's swaps here (Jupiter); an Ethereum network's in evm-swap.js (KyberSwap), picked at the top of either
+  const where = swapNetwork(w, prefill.net);
+  if (where !== 'solana') { evmSwapScreen({ ...prefill, net: where }); return; }
+  if (!w.chains.sol) { show(...screen('swap', () => home(), h('div', { class: 'note' }, `swaps happen on Solana and Ethereum's networks, and ${w.name} has neither address (it's an imported key).`))); return; }
   let list;
   try {
     await loadHoldings(w);
@@ -484,7 +496,7 @@ async function swapScreen(prefill = {}) {
       facts, err, actions(() => home(), next));
   }
   draw();
-  show(...screen('swap', null, form, h('p', { class: 'fine' }, 'routed by Jupiter, on Solana')));
+  show(...screen('swap', null, swapNetSeg(w, 'solana'), form, h('p', { class: 'fine' }, 'routed by Jupiter, on Solana')));
   if (amtIn.value) getQuote();
   amtIn.focus();
 }
@@ -493,7 +505,8 @@ async function swapScreen(prefill = {}) {
 
 async function historyScreen() {
   const w = active();
-  const tagged = chainsOf(w).length > 1;
+  // (an Ethereum address's history spans its four networks, so it's always marked)
+  const tagged = chainsOf(w).length > 1 || !!w.chains.eth;
   const list = h('ol', { class: `hist ${tagged ? 'tagged' : ''}` }, h('li', { class: 'dim wait', 'aria-label': 'reading' }, h('span', null, spinner())));
   const err = errLine();
   show(...screen('history', () => home(), box(null, { tone: 'soft' }, list), err));
@@ -505,7 +518,7 @@ async function historyScreen() {
     if (!items.length) { list.replaceChildren(h('li', { class: 'dim wait' }, h('span', null, 'nothing yet'))); return; }
     list.replaceChildren(...items.map((t) => h('li', null,
       h('a', { href: t.explorer, target: '_blank', rel: 'noreferrer noopener' }, short(t.id, 6)),
-      tagged ? h('span', { class: 'chain-tag' }, t.chain) : null,
+      tagged ? h('span', { class: 'chain-tag' }, t.tag ?? t.chain) : null,
       h('span', { class: 'dim' }, t.time ? ago(t.time) : 'pending'),
       h('span', { class: t.pending ? 't-gold' : t.ok ? 't-go' : 't-red' }, t.pending ? '[..]' : t.ok ? '[ok]' : '[failed]'))));
   } catch (e) { list.replaceChildren(h('li', { class: 't-red wait' }, h('span', null, e.message))); }
@@ -525,9 +538,6 @@ async function settingsScreen(stay = false) {
   const rpcIn = h('input', { class: 'input', value: net.custom ? net.url : '', placeholder: net.url, spellcheck: 'false', autocomplete: 'off' });
   const rpcSave = h('button', { class: 'btn-go btn-sm', type: 'button' }, 'save');
   rpcSave.addEventListener('click', () => set({ rpc: { [s.network]: rpcIn.value.trim() } }));
-  const ethIn = h('input', { class: 'input', value: s.ethRpc ?? '', placeholder: "plum's public rpcs", spellcheck: 'false', autocomplete: 'off' });
-  const ethSave = h('button', { class: 'btn-go btn-sm', type: 'button' }, 'save');
-  ethSave.addEventListener('click', () => set({ ethRpc: ethIn.value.trim() }));
 
   const jupF = secretField({ placeholder: s.jupiterKey ? 'a key is saved' : 'optional', caps: false });
   const jupSave = h('button', { class: 'btn-go btn-sm', type: 'button' }, 'save');
@@ -559,8 +569,8 @@ async function settingsScreen(stay = false) {
     box('network', { tone: 'soft' },
       field('solana rpc', rpcIn, net.custom ? 'yours' : net.builtIn ? 'built in' : null),
       h('div', { class: 'row' }, rpcSave),
-      field('ethereum rpc', ethIn, s.ethRpc ? 'yours' : null),
-      h('div', { class: 'row' }, ethSave)),
+      // Ethereum's four networks, one field at a time
+      evmRpcField(ctx.S.evm, set)),
     box('security', { tone: 'soft' },
       field('lock after', seg([[5, '5m'], [15, '15m'], [60, '1h'], [240, '4h']], s.autolockMin, (v) => set({ autolockMin: v }))),
       lock,
@@ -580,7 +590,7 @@ async function settingsScreen(stay = false) {
     sitesList.replaceChildren(...list.map((x) => {
       const rm = h('button', { class: 'mini', type: 'button' }, 'revoke');
       rm.addEventListener('click', async () => { await call('sites.revoke', { origin: x.origin }); settingsScreen(true); });
-      const on = [x.accounts?.length ? 'sol' : null, x.evm?.length ? 'eth' : null, x.btc?.length ? 'btc' : null].filter(Boolean).join(' ');
+      const on = [x.accounts?.length ? 'sol' : null, x.evm?.length ? x.evmNet ?? 'eth' : null, x.btc?.length ? 'btc' : null].filter(Boolean).join(' ');
       return h('div', { class: 'site' }, h('b', null, new URL(x.origin).host), h('span', { class: 'chain-tag' }, on), h('span', { class: 'dim' }, ago(Math.floor(x.lastUsed / 1000))), rm);
     }));
   } catch (e) { sitesList.replaceChildren(h('span', { class: 't-red' }, e.message)); }

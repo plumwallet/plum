@@ -402,7 +402,7 @@ details.more[open] summary { margin-bottom: 8px; }
 .hist li.wait { grid-template-columns: 1fr; }
 /* the time and the outcome in columns of their own width, so every line's sit under the one above */
 .hist li:not(.wait) { grid-template-columns: minmax(0, 1fr) 8ch 8ch; }
-.hist.tagged li:not(.wait) { grid-template-columns: minmax(0, 1fr) 3ch 8ch 8ch; }
+.hist.tagged li:not(.wait) { grid-template-columns: minmax(0, 1fr) 4ch 8ch 8ch; }
 .hist li:not(.wait) > span { text-align: right; white-space: nowrap; }
 .hist li + li { background: var(--ln-dash-faint) repeat-x 0 -10px / 0.6em 20px; }
 .hist li:not(.wait):hover { background-color: var(--hi); }
@@ -479,3 +479,17 @@ details.more[open] summary { margin-bottom: 8px; }
 .msg.hex { color: var(--mute); line-height: 18px; }
 .answer { padding-top: 6px; }
 .ack-row { display: flex; }
+
+/* ------------------------------------------------------------ Ethereum's networks */
+/* the network an Ethereum request or swap is on, said loudly: its name in capitals in its own colour */
+.evm-net.n-ethereum { color: #a3b1f5; }
+.evm-net.n-base { color: #7aa5ff; }
+.evm-net.n-arbitrum { color: #6cc4f7; }
+.evm-net.n-polygon { color: #b393f5; }
+.kv.loud > span:last-child { color: var(--gold); }
+/* a swap's network, picked above its form; its steps while it goes out */
+.swap-net { display: flex; justify-content: space-between; align-items: center; gap: 1ch; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.steps li { display: grid; grid-template-columns: 2ch minmax(0, 1fr) auto; gap: 0 1ch; color: var(--ink-2); }
+.steps li::before { content: '>'; color: var(--green-ink); font-weight: 800; }
+.steps .r { color: var(--green-ink); font-weight: 700; }

@@ -6,6 +6,7 @@ import { short } from '../shared/format.js';
 import { call, keepAlive } from './api.js';
 import { BTC_TITLES, btcAsk, btcBody, btcPreview } from './btc-approve.js';
 import { busyButton, h, mount } from './dom.js';
+import { netLoud } from './evm.js';
 import { CHAIN, box, chip, kv, netChip, previewBlock, riskBanner, secretField, spinner, warnings } from './parts.js';
 import './scrollbar.js';
 
@@ -27,7 +28,8 @@ function head(view) {
     h('div', { class: 'top-in' },
       h('div', { class: 'who' }, h('b', null, 'plum'), h('div', { class: 'dim' }, view.queue > 1 ? `request 1 of ${view.queue}` : 'a site is asking')),
       h('span', { class: 'grow' }),
-      view.chain === 'eth' ? null : netChip(view.network ?? 'mainnet')));
+      // an Ethereum request's network, always and loudly: the same address works on four
+      view.chain === 'eth' ? netLoud(view.evmNet?.key) : netChip(view.network ?? 'mainnet')));
 }
 
 function siteBox(view) {
@@ -46,7 +48,8 @@ function siteBox(view) {
     h('div', { class: 'site-line' }, h('b', { class: 'host' }, view.host), view.connected ? chip('connected', 'green') : chip('new site', 'hot')),
     view.secure ? null : h('div', { class: 't-gold' }, 'not https: this is your own computer (localhost)'),
     h('p', null, what),
-    kv('on', CHAIN[view.chain ?? 'sol'].name),
+    view.evmNet ? kv('on', `${view.evmNet.title.toLowerCase()} (chain ${view.evmNet.id})`, 'loud') : kv('on', CHAIN[view.chain ?? 'sol'].name),
+    view.evmNet?.siteNow ? h('div', { class: 'note hot' }, `this site moved to ${view.evmNet.siteNow} after it asked: this request is still for ${view.evmNet.title}, and is signed for ${view.evmNet.title} only`) : null,
     view.account ? kv('wallet', `${view.account.name}  ${short(view.account.address)}`) : null);
 }
 

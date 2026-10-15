@@ -208,6 +208,8 @@ import { ICON } from './icon.js';
 
   const evmListeners = new Map(); // event -> Set of handlers
   let evmAccounts = [];
+  // the network this page was last told it's on (0x hex), once it has asked: Ethereum, Base, Arbitrum or Polygon
+  let evmChain = null;
   const evmEmit = (event, ...args) => {
     for (const fn of evmListeners.get(event) ?? []) { try { fn(...args); } catch (e) { console.error(e); } }
   };
@@ -217,10 +219,21 @@ import { ICON } from './icon.js';
     evmAccounts = next;
     if (!same) evmEmit('accountsChanged', next.slice());
   };
-  // after a wallet switch, a disconnect in plum, or a revoke: ask again what this site may see
+  // chainChanged when the network differs from the last one this page saw (after a switch, even if it never asked)
+  const setEvmChain = (id, { moved = false } = {}) => {
+    if (typeof id !== 'string' || !/^0x[0-9a-f]+$/i.test(id)) return;
+    const was = evmChain;
+    evmChain = id;
+    if (was !== id && (was !== null || moved)) evmEmit('chainChanged', id);
+  };
+  // after a wallet switch, a disconnect in plum, a revoke, or the site moving networks in another tab: ask again
   async function refreshEvm() {
-    if (!evmAccounts.length) return;
-    try { setEvmAccounts(await call('evm', { method: 'eth_accounts', params: [] })); } catch { /* keep what we have */ }
+    if (evmAccounts.length) {
+      try { setEvmAccounts(await call('evm', { method: 'eth_accounts', params: [] })); } catch { /* keep what we have */ }
+    }
+    if (evmChain !== null) {
+      try { setEvmChain(await call('evm', { method: 'eth_chainId', params: [] })); } catch { /* keep what we have */ }
+    }
   }
 
   async function request(args) {
@@ -236,13 +249,23 @@ import { ICON } from './icon.js';
     if (method === 'eth_requestAccounts' || method === 'eth_accounts') setEvmAccounts(result);
     if (method === 'wallet_requestPermissions') setEvmAccounts(result?.[0]?.caveats?.[0]?.value ?? []);
     if (method === 'wallet_revokePermissions') setEvmAccounts([]);
+    if (method === 'eth_chainId') setEvmChain(result);
+    if (method === 'wallet_switchEthereumChain' || method === 'wallet_addEthereumChain') {
+      try { setEvmChain(await call('evm', { method: 'eth_chainId', params: [] }), { moved: true }); } catch { /* asked again on the next event */ }
+    }
     return result;
   }
 
+  // 'connect' says which network the page is on: told once, when something first listens for it
+  let connectTold = false;
   const evmOn = (event, fn) => {
     if (typeof fn !== 'function') return provider;
     if (!evmListeners.has(event)) evmListeners.set(event, new Set());
     evmListeners.get(event).add(fn);
+    if (event === 'connect' && !connectTold) {
+      connectTold = true;
+      call('evm', { method: 'eth_chainId', params: [] }).then((id) => { setEvmChain(id); evmEmit('connect', { chainId: id }); }, () => {});
+    }
     return provider;
   };
   const evmOff = (event, fn) => { evmListeners.get(event)?.delete(fn); return provider; };
@@ -260,8 +283,6 @@ import { ICON } from './icon.js';
   const announce = () => { try { window.dispatchEvent(new CustomEvent('eip6963:announceProvider', { detail: announced })); } catch (e) { console.error('Plum: announce failed', e); } };
   window.addEventListener('eip6963:requestProvider', announce);
   announce();
-  // plum can always reach Ethereum mainnet
-  setTimeout(() => evmEmit('connect', { chainId: '0x1' }), 0);
 
   /* -------------------------------------------------- Bitcoin (bitcoin.js) */
   const bitcoin = startBitcoin({ call, icon: ICON });

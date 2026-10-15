@@ -218,12 +218,18 @@ const BTC_PAINT = ['abbc ', 'abbc ', 'abbc '];
 const BTC_INKS = { a: '#ffc56b', b: '#f7931a', c: '#c96f0a' };
 const BTC_MARK = BTC_ART.map((row, r) => [...row].map((ch, c) => [ch, BTC_INKS[BTC_PAINT[r][c]] ?? null]));
 
-const MARKS = { sol: SOL_MARK, eth: ETH_MARK, btc: BTC_MARK };
+/** POL's mark, typed: two hexagons joined at an edge (Polygon's link), in Polygon's own purple, lit from the left. */
+const POL_ART = ['/#\\#\\', '|#|#|', '\\#/#/'];
+const POL_PAINT = ['aabcc', 'aabcc', 'aabcc'];
+const POL_INKS = { a: '#cbb6fb', b: '#a580f2', c: '#8a52ea' };
+const POL_MARK = POL_ART.map((row, r) => [...row].map((ch, c) => [ch, POL_INKS[POL_PAINT[r][c]] ?? null]));
 
-/** A coin's typed mark, 5 characters by 3 lines at the text's size (SOL, ETH or BTC). */
+const MARKS = { sol: SOL_MARK, eth: ETH_MARK, btc: BTC_MARK, pol: POL_MARK };
+
+/** A coin's typed mark, 5 characters by 3 lines at the text's size (SOL, ETH, BTC or POL). */
 export function coinMark(chain) {
   const mark = MARKS[chain] ?? SOL_MARK;
-  return h('pre', { class: 'sol-mark coin-mark', role: 'img', 'aria-label': CHAIN[chain]?.ticker ?? 'SOL' },
+  return h('pre', { class: 'sol-mark coin-mark', role: 'img', 'aria-label': CHAIN[chain]?.ticker ?? (chain === 'pol' ? 'POL' : 'SOL') },
     mark.map((row, r) => [r ? '\n' : null, row.map(([ch, colour]) => (colour ? h('span', { vars: { color: colour } }, ch) : ch))]));
 }
 export const solMark = () => coinMark('sol');
@@ -259,21 +265,24 @@ function evmPreviewBlock(p, { extra = [] } = {}) {
   const changes = (p.changes ?? []).map((c) => h('div', { class: 'chg-row' }, deltaLine(c.delta, c.decimals ?? 0, c.symbol), c.verified === false ? chip('unverified', 'hot') : null));
   const ok = p.sim?.ok;
   const side = ok === true ? chip('simulated', 'green') : ok === false ? chip('fails', 'hot') : chip('not simulated', 'hot');
-  const eth = (wei) => `${prettyAmount(BigInt(wei), 18, { sig: 6 })} ETH`;
+  // amounts in the network's own coin (POL on Polygon), and the network named where the changes are
+  const coin = p.net?.symbol ?? 'ETH';
+  const where = (p.net?.title ?? 'Ethereum').toLowerCase();
+  const eth = (wei) => `${prettyAmount(BigInt(wei), 18, { sig: 6 })} ${coin}`;
   return h('div', { class: 'preview' },
-    box('what changes', { tone: ok === false ? 'red' : 'soft', side },
+    box(p.net ? `what changes on ${where}` : 'what changes', { tone: ok === false ? 'red' : 'soft', side },
       ok === false ? h('p', { class: 't-red' }, p.sim.error ?? 'it fails') : changes.length ? changes : h('p', { class: 'dim' }, ok ? 'no change to your ETH or tokens (besides the fee)' : 'not known without a simulation')),
     warnings([...extra, ...(p.warnings ?? [])]),
     h('div', { class: 'kvs' },
       BigInt(p.call?.value ?? 0) > 0n ? kv('sends', eth(p.call.value)) : null,
       p.call?.name ? kv('calls', `${p.call.name} on ${short(p.call.to ?? 'a new contract', 6)}`) : p.call?.to ? kv('to', short(p.call.to, 6)) : null,
-      p.fee ? kv('network fee', `about ${eth(p.fee.est)}`) : null,
+      p.fee ? kv(p.txs > 1 ? `network fees (${p.txs})` : 'network fee', `about ${eth(p.fee.est)}`) : null,
       p.fee ? kv('at most', eth(p.fee.max)) : null,
-      kv('signers', '1 (you)', 'good')),
+      kv('signers', p.txs > 1 ? '1 each (you)' : '1 (you)', 'good')),
     // where it goes, in full: a lookalike of an address you know stands out by its middle
     p.call?.to ? addressBlock(p.call.to) : null,
     h('details', { class: 'more' },
-      h('summary', null, h('span', null, '-- details'), h('span', { class: 'dim' }, `ethereum · ${p.call?.bytes ?? 0} bytes of data`)),
+      h('summary', null, h('span', null, '-- details'), h('span', { class: 'dim' }, `${where} · ${p.call?.bytes ?? 0} bytes of data`)),
       h('div', { class: 'kvs' },
         p.call?.to ? kv('contract or address', short(p.call.to, 8)) : kv('creates', 'a contract'),
         BigInt(p.call?.value ?? 0) > 0n ? kv('sends', eth(p.call.value)) : null,
