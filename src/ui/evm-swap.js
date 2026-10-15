@@ -7,6 +7,7 @@ import { call } from './api.js';
 import { active, ctx, errLine, field, go, screen, show, showErr } from './app.js';
 import { busyButton, h, mount } from './dom.js';
 import { NETS, netLoud, netOf } from './evm.js';
+import { deviceBox, isLedgerWallet } from './ledger.js';
 import { actions, box, coinMark, kv, previewBlock, seg, spinner } from './parts.js';
 
 /** Where a swap happens: 'solana' or an Ethereum network's key. The one asked for when the wallet has that chain,
@@ -181,13 +182,17 @@ function review(prep, { back }) {
   let acked = false;
   ack.addEventListener('click', () => { acked = !acked; ack.classList.toggle('on', acked); ack.setAttribute('aria-pressed', String(acked)); go2.disabled = !acked; });
   const err = errLine();
+  // a Ledger signs each step after this: its state, live, while plum waits on it
+  const device = isLedgerWallet(active()) ? deviceBox('Ethereum', { hidden: true }) : null;
   busyButton(go2, async () => {
     err.hidden = true;
+    device?.watch();
     try {
       const done = await call('evm.swap.submit', { id: prep.id, ignoreRisk: acked });
+      device?.stop();
       ctx.bal.clear();
       swapped(done, prep);
-    } catch (e) { showErr(err, e); }
+    } catch (e) { if (!device?.failed(e)) showErr(err, e); }
   });
   const steps = prep.approval
     ? `approve exactly ${prep.approval.amount} ${prep.approval.token}, then swap`
@@ -201,7 +206,7 @@ function review(prep, { back }) {
       kv('steps', steps),
       prep.approval ? kv('spender', `kyberswap ${short(prep.approval.spender, 4)}`) : null),
     previewBlock(prep.preview, { extra: prep.warnings }),
-    dangers ? ack : null, err, actions(back, go2)));
+    device?.node, dangers ? ack : null, err, actions(back, go2)));
 }
 
 /** After a swap: its steps as they went out, the swap's last line turning until it lands. */

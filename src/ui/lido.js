@@ -7,6 +7,7 @@ import { call } from './api.js';
 import { active, ctx, errLine, field, go, screen, show, showErr } from './app.js';
 import { busyButton, h } from './dom.js';
 import { netLoud } from './evm.js';
+import { deviceBox, isLedgerWallet } from './ledger.js';
 import { actions, box, kv, previewBlock, seg, spinner } from './parts.js';
 
 const eth = (wei) => `${prettyAmount(BigInt(wei), 18)} ETH`;
@@ -78,13 +79,17 @@ function review(prep, { back }) {
   const titles = { stake: 'staking', request: 'asking for ETH back', claim: 'claiming' };
   const go2 = h('button', { class: 'btn-go block lg', type: 'button', dataset: { busyText: prep.approval ? 'approving, then sending' : 'signing' } }, { stake: 'stake it ->', request: 'ask for it ->', claim: 'claim it ->' }[prep.action]);
   const err = errLine();
+  // a Ledger signs each step after this: its state, live, while plum waits on it
+  const device = isLedgerWallet(active()) ? deviceBox('Ethereum', { hidden: true }) : null;
   busyButton(go2, async () => {
     err.hidden = true;
+    device?.watch();
     try {
       const done = await call('lido.submit', { id: prep.id });
+      device?.stop();
       ctx.bal.clear();
       sent(done, prep);
-    } catch (e) { showErr(err, e); }
+    } catch (e) { if (!device?.failed(e)) showErr(err, e); }
   });
   show(...screen('review', null,
     box(titles[prep.action], { tone: 'ink', side: netLoud('ethereum') },
@@ -94,7 +99,7 @@ function review(prep, { back }) {
       kv('steps', prep.approval ? `approve exactly ${prep.approval.amount} stETH, then ask` : 'one transaction'),
       prep.approval ? kv('spender', `lido's queue ${short(prep.approval.spender, 4)}`) : null),
     previewBlock(prep.preview, { extra: prep.warnings }),
-    err, actions(back, go2)));
+    device?.node, err, actions(back, go2)));
 }
 
 /** After a step: its transactions as they went out, the last turning until it lands. */
