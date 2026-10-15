@@ -43,6 +43,8 @@ function chainState(key) {
     l1Fee: 7_000_000_000n,
     /** (call, index, calls) => eth_simulateV1's result for that call, or null to answer "method not found" */
     simulate: null,
+    /** ({ to, data }) => an eth_call's answer (0x hex) for contracts that aren't tokens, or undefined */
+    ethCall: null,
     /** a hash -> receipt status ('0x1', '0x0', or null for not yet) */
     receipts: new Map(),
     blockscout: { tokens: new Map(), txs: new Map() }, // owner (lowercase) -> token-balances items / transaction items
@@ -83,6 +85,8 @@ export function fakeNet() {
       case 'eth_call': {
         const { to, data } = params[0];
         if (lower(to) === L1_ORACLE && data.startsWith('0x49948e0e')) return `0x${c.l1Fee.toString(16).padStart(64, '0')}`;
+        const own = c.ethCall?.(params[0]);
+        if (own !== undefined) return own;
         const t = c.tokens.get(lower(to));
         if (!t) throw Object.assign(new Error('execution reverted'), { rpc: { code: 3, message: 'execution reverted' } });
         if (data === '0x313ce567') return `0x${t.decimals.toString(16).padStart(64, '0')}`;

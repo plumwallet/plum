@@ -23,6 +23,7 @@ import * as E from './eth.js';
 import { EVM_NETWORKS, MAINNET, chainHex, networkById, networkByKey, unsupportedChain } from './evm-chains.js';
 import { forgetSite, moveSite, siteNetwork } from './evm-site.js';
 import * as X from './evm-swap.js';
+import * as L from './lido.js';
 import { isMnemonic, newMnemonic, normalizeMnemonic } from './keys.js';
 import { pool } from './net.js';
 import { checkHost, fetchLists } from './phishing.js';
@@ -1616,7 +1617,7 @@ async function updateSettings(patch) {
   return out;
 }
 
-/** What the swap module (evm-swap.js) needs from here: the active wallet's Ethereum address, each network's RPCs, and
+/** What the swap and staking modules (evm-swap.js, lido.js) need from here: the active wallet's Ethereum address, each network's RPCs, and
  * plum's own signing (one signer, checked) and following of what it sends. */
 async function evmDeps() {
   const { address: me } = await requireActive('eth');
@@ -1693,6 +1694,9 @@ const ui = {
   'evm.swap.quote': async (p) => X.quote(p, await evmDeps()),
   'evm.swap.prepare': async (p) => X.prepare(p, await evmDeps()),
   'evm.swap.submit': async (p) => X.submit(p, await evmDeps()),
+  'lido.state': async () => L.state(await evmDeps()),
+  'lido.prepare': async (p) => L.prepare(p, await evmDeps()),
+  'lido.submit': async (p) => L.submit(p, await evmDeps()),
   'tx.status': ({ signature }) => sent.get(signature) ?? null,
   'tokens.search': async ({ query }) => searchTokens(query, await jupOpts()),
   'approval.get': approvalView,

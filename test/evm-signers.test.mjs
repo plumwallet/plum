@@ -1,5 +1,6 @@
 // Every transaction plum builds on Ethereum, Base, Arbitrum and Polygon has exactly one signer, your wallet: sends of
-// each network's coin and of a token, a site's transaction on each network, and a swap's approvals and the swap. Each
+// each network's coin and of a token, a site's transaction on each network, a swap's approvals and the swap, and
+// Lido's stake, withdrawal request (and its approval) and claim. Each
 // raw transaction that reaches a network is taken apart here: one EIP-1559 transaction, for that network, with one
 // signature in it (the RLP list's last three fields: no second set, no EIP-7702 authorizations), recovering to the
 // wallet. And nothing reaches a network before you said yes.
@@ -35,7 +36,10 @@ const abi = parseAbi([
   'struct SwapExecutionParams { address callTarget; address approveTarget; bytes targetData; SwapDescriptionV2 desc; bytes clientData; }',
   'function swap(SwapExecutionParams execution) payable returns (uint256 returnAmount, uint256 gasUsed)',
   'function approve(address spender, uint256 amount) returns (bool)',
+  'function requestWithdrawals(uint256[] amounts, address owner) returns (uint256[])',
 ]);
+const STETH = '0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84';
+const QUEUE = '0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1';
 
 // every network: a coin balance, a token, a simulation that moves what it's told, KyberSwap answering honestly
 for (const [key, c] of Object.entries(net.evm)) {
@@ -52,9 +56,25 @@ for (const [key, c] of Object.entries(net.evm)) {
       const buy = d.dstToken === NATIVE ? log(NATIVE, TRANSFER, ROUTER, d.dstReceiver, d.minReturnAmount + 1n) : log(d.dstToken, TRANSFER, EXECUTOR, d.dstReceiver, d.minReturnAmount + 1n);
       return { status: '0x1', gasUsed: '0x2bf20', returnData: '0x', logs: [sell, buy] };
     }
+    // Lido: a stake mints stETH; a request takes it and hands back the request's NFT; a claim burns that and pays ETH
+    const nft = (a, b, id) => ({ address: lower(QUEUE), topics: [TRANSFER, pad(a), pad(b), word(id)], data: '0x' });
+    if (call.data?.startsWith('0xa1903eab')) return { status: '0x1', gasUsed: '0x12c87', returnData: '0x', logs: [log(NATIVE, TRANSFER, call.from, STETH, BigInt(call.value)), log(STETH, TRANSFER, zeroAddress, call.from, BigInt(call.value) - 1n)] };
+    if (call.data?.startsWith('0xd6681042')) {
+      const { args: [amounts] } = decodeFunctionData({ abi, data: call.data });
+      return { status: '0x1', gasUsed: '0x27100', returnData: '0x', logs: [log(STETH, TRANSFER, call.from, QUEUE, amounts.reduce((n, x) => n + x, 0n)), ...amounts.map((_, i) => nft(zeroAddress, call.from, 300 + i))] };
+    }
+    if (call.data?.startsWith('0xf8444436')) return { status: '0x1', gasUsed: '0x11170', returnData: '0x', logs: [log(NATIVE, TRANSFER, QUEUE, call.from, 10n ** 18n), nft(call.from, zeroAddress, BigInt(`0x${call.data.slice(10)}`))] };
     return { status: '0x1', gasUsed: '0x5208', returnData: '0x', logs: call.value && BigInt(call.value) ? [log(NATIVE, TRANSFER, call.from, call.to, BigInt(call.value))] : [] };
   };
 }
+// Lido on Ethereum: some stETH, and one finalized withdrawal request (#77)
+net.evm.ethereum.tokens.set(lower(STETH), { decimals: 18, symbol: 'stETH', name: 'stETH', price: 2500, balances: new Map([[lower(ETH_ME), 3n * 10n ** 18n]]), allowances: new Map() });
+net.evm.ethereum.ethCall = ({ to, data }) => {
+  if (lower(to) !== lower(QUEUE)) return undefined;
+  if (data.startsWith('0x7d031b65')) return `0x${[32n, 1n, 77n].map((n) => word(n).slice(2)).join('')}`;
+  if (data.startsWith('0xb8c4b85a')) return `0x${[32n, 1n, 10n ** 18n, 10n ** 18n, BigInt(ETH_ME), 1n, 1n, 0n].map((n) => word(n).slice(2)).join('')}`;
+  return undefined;
+};
 // a fair price at the market's (the coin at $2,500, POL at $0.25, the token at $1)
 const coinUsd = (key) => (key === 'polygon' ? 0.25 : 2500);
 net.kyber.routes = (q, slug) => {
@@ -137,4 +157,14 @@ test("swaps on each network: the approval's reset, the exact approval and the sw
     net.evm[key].tokens.get(lower(TOKEN[key])).allowances.set(`${lower(ETH_ME)}:${lower(ROUTER)}`, 7n);
   }
   assert.ok(seen.length >= 4 * 2 + 4 + 4 * 4, `${seen.length} transactions checked`);
+});
+
+test("Lido: the stake, the withdrawal request's exact approval and the request, and the claim, one signer each", async () => {
+  for (const [input, kinds] of [[{ action: 'stake', amount: '0.5' }, ['stake']], [{ action: 'request', amount: '1' }, ['approve', 'request']], [{ action: 'claim', request: '77' }, ['claim']]]) {
+    const prep = await ok('lido.prepare', input);
+    assert.deepEqual(prep.steps, kinds);
+    assert.equal(net.evm.ethereum.sent.length, seen.filter((x) => x.key === 'ethereum').length, 'nothing sent before you said yes');
+    await ok('lido.submit', { id: prep.id });
+    await everyNewTransaction('ethereum', kinds);
+  }
 });
