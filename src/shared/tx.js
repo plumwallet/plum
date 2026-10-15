@@ -1,11 +1,24 @@
-// A Solana transaction, read and written straight from its bytes (legacy and v0): where the message starts (that's
+// A Solana transaction, read and written straight from its bytes (legacy, v0 and v1): where the message starts (that's
 // what gets signed), which accounts are writable, and a writer for the few transactions plum builds itself (sends),
 // so no Solana library is needed anywhere.
+//
+// v1 (SIMD-0385) is laid out differently: the message comes first, from its version byte 0x81, and the signatures sit at
+// the tail, one for each required signer, with no count in front. Its message is
+//   0x81 | 3-byte header | u32 config mask | 32-byte blockhash | u8 instructions | u8 addresses | addresses |
+//   config values | per instruction (u8 program, u8 accounts, u16 data length) | per instruction (accounts, data)
+// The compute budget lives in the config values (the priority fee in whole lamports), so compute-budget instructions
+// do nothing in it, and it has no lookup tables. It can be 4096 bytes long.
 import { base58Decode, base58Encode } from './base58.js';
 import { concat, readU32, readU64, u32le, u64le } from './bytes.js';
 
 /** The most a legacy or v0 transaction can be. */
 export const MAX_TX_BYTES = 1232;
+/** The most a v1 transaction can be. */
+export const MAX_V1_TX_BYTES = 4096;
+/** The byte a v1 transaction (and its message) starts with. */
+export const V1_PREFIX = 0x81;
+/** The most bytes a transaction can be, by how it starts: a v1 one 4096, legacy and v0 1232. */
+export const maxTxBytes = (bytes) => (bytes?.[0] === V1_PREFIX ? MAX_V1_TX_BYTES : MAX_TX_BYTES);
 
 export const SYSTEM_PROGRAM = '11111111111111111111111111111111';
 export const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
@@ -50,8 +63,60 @@ export function compactU16(n) {
   }
 }
 
+// v1's config mask: bits 0 and 1 together carry the priority fee (a u64 of lamports), bit 2 the compute unit limit,
+// bit 3 the loaded accounts data size limit and bit 4 the heap size (a u32 each), in that order. Any other bit, or
+// one priority bit without the other, makes the transaction invalid.
+const V1_PRIORITY = 0b11;
+const V1_UNITS = 0b100;
+const V1_LOADED = 0b1000;
+const V1_HEAP = 0b10000;
+const V1_KNOWN = 0b11111;
+/** The runtime's limits for a v1 message: signers, addresses, instructions, and the heap size it may ask for. */
+export const V1_LIMITS = { signatures: 12, addresses: 64, instructions: 64, heapMin: 32 * 1024, heapMax: 256 * 1024 };
+
+/** A v1 message, read from `start` (its 0x81) and checked the way the runtime sanitizes one. */
+function readV1MessageAt(bytes, start, exact) {
+  const r = reader(bytes, start);
+  if (r.byte() !== V1_PREFIX) throw new Error("it isn't a v1 message");
+  const [required, readonlySigned, readonlyUnsigned] = r.take(3);
+  const mask = readU32(r.take(4), 0);
+  if (mask & ~V1_KNOWN) throw new Error('its config sets fields Solana does not have');
+  if ((mask & V1_PRIORITY) && (mask & V1_PRIORITY) !== V1_PRIORITY) throw new Error('its config sets half of the priority fee');
+  const blockhash = base58Encode(r.take(32));
+  const ixCount = r.byte();
+  const keyCount = r.byte();
+  const keys = [];
+  for (let i = 0; i < keyCount; i++) keys.push(base58Encode(r.take(32)));
+  const config = { priorityFee: null, computeUnitLimit: null, loadedAccountsDataSizeLimit: null, heapSize: null };
+  if (mask & V1_PRIORITY) config.priorityFee = readU64(r.take(8), 0);
+  if (mask & V1_UNITS) config.computeUnitLimit = readU32(r.take(4), 0);
+  if (mask & V1_LOADED) config.loadedAccountsDataSizeLimit = readU32(r.take(4), 0);
+  if (mask & V1_HEAP) config.heapSize = readU32(r.take(4), 0);
+  const heads = [];
+  for (let i = 0; i < ixCount; i++) {
+    const h = r.take(4);
+    heads.push({ programIndex: h[0], count: h[1], length: h[2] | (h[3] << 8) });
+  }
+  const instructions = heads.map((h) => ({ programIndex: h.programIndex, accounts: [...r.take(h.count)], data: r.take(h.length) }));
+  if (exact && r.at !== bytes.length) throw new Error('it has bytes left over at the end');
+  if (!required) throw new Error('it has no fee payer');
+  if (required > V1_LIMITS.signatures) throw new Error(`it asks for ${required} signatures, more than Solana allows`);
+  if (ixCount > V1_LIMITS.instructions) throw new Error(`it has ${ixCount} instructions, more than Solana allows`);
+  if (keyCount > V1_LIMITS.addresses) throw new Error(`it names ${keyCount} addresses, more than Solana allows`);
+  if (keyCount < required + readonlyUnsigned || readonlySigned >= required) throw new Error('its header is impossible');
+  if (new Set(keys).size !== keys.length) throw new Error('it names the same address twice');
+  const heap = config.heapSize;
+  if (heap != null && (heap % 1024 || heap < V1_LIMITS.heapMin || heap > V1_LIMITS.heapMax)) throw new Error('its heap size is invalid');
+  for (const ix of instructions) {
+    // the fee payer can't be a program, and every account must be one it names
+    if (ix.programIndex === 0 || ix.programIndex >= keyCount || ix.accounts.some((a) => a >= keyCount)) throw new Error('an instruction names an account the transaction does not have');
+  }
+  return { version: 1, required, readonlySigned, readonlyUnsigned, keys, blockhash, instructions, lookups: [], config, mask };
+}
+
 /** The message part (what a signature covers), read from position `start` (to the very end, unless `exact` is off). */
 function readMessageAt(bytes, start, exact = true) {
+  if (bytes[start] === V1_PREFIX) return readV1MessageAt(bytes, start, exact);
   const r = reader(bytes, start);
   let version = 'legacy';
   if (bytes[r.at] & 0x80) {
@@ -87,14 +152,27 @@ function readMessageAt(bytes, start, exact = true) {
 
 const asBytes = (input) => (input instanceof Uint8Array ? input : Uint8Array.from(input));
 
+/** A v1 transaction: its message, then one 64-byte signature per required signer, at the tail. */
+function readV1Tx(bytes) {
+  if (bytes.length > MAX_V1_TX_BYTES) throw new Error(`it is ${bytes.length} bytes, more than the ${MAX_V1_TX_BYTES} a v1 transaction can be`);
+  if (bytes.length < 2) throw new Error('it ends too early');
+  const sigStart = bytes.length - 64 * bytes[1];
+  if (sigStart < 2) throw new Error('it ends too early');
+  const message = bytes.subarray(0, sigStart);
+  const m = readV1MessageAt(message, 0, true);
+  const signatures = [];
+  for (let i = 0; i < m.required; i++) signatures.push(bytes.subarray(sigStart + 64 * i, sigStart + 64 * (i + 1)));
+  return { bytes, size: bytes.length, signatures, sigStart, messageStart: 0, message, ...m };
+}
+
 /**
- * A legacy or v0 transaction, decoded. `message` is the signed part and `sigStart` where the first signature sits.
- * Throws on anything else (a v1 transaction included: plum can't read it, so it never signs it).
+ * A legacy, v0 or v1 transaction, decoded. `message` is the signed part and `sigStart` where the first signature sits.
+ * Throws on anything else (a newer version included: plum can't read it, so it never signs it).
  */
 export function readTx(input) {
   const bytes = asBytes(input);
   if (!bytes.length) throw new Error('it is empty');
-  if (bytes[0] === 0x81) throw new Error("it is a v1 transaction, which plum can't read yet");
+  if (bytes[0] === V1_PREFIX) return readV1Tx(bytes);
   const r = reader(bytes);
   const count = r.short();
   const sigStart = r.at;
@@ -141,8 +219,13 @@ export function isStaticWritable(t, i) {
 export const signersOf = (t) => t.keys.slice(0, t.required);
 export const isSigned = (sig) => sig.some((b) => b !== 0);
 
-/** The compute budget a transaction sets: { units, microLamports, priorityLamports }. */
+/** Compute-budget instructions a transaction carries (they do nothing in a v1 transaction). */
+export const budgetInstructions = (t, programOf = (ix) => t.keys[ix.programIndex]) => t.instructions.filter((ix) => programOf(ix) === COMPUTE_BUDGET_PROGRAM);
+
+/** The compute budget a transaction sets: { units, microLamports, priorityLamports } (a v1 transaction's from its
+ * config, where the priority fee is whole lamports and an unset limit is 0; microLamports is null for it). */
 export function computeBudgetOf(t, programOf = (ix) => t.keys[ix.programIndex]) {
+  if (t.version === 1) return { units: t.config.computeUnitLimit ?? 0, microLamports: null, priorityLamports: t.config.priorityFee ?? 0n };
   let units = null, price = 0n, counted = 0;
   for (const ix of t.instructions) {
     if (programOf(ix) === COMPUTE_BUDGET_PROGRAM) {
@@ -177,10 +260,10 @@ export function withSignature(input, signer, signature) {
 /* ------------------------------------------------------------ writing: the transactions plum builds (legacy) */
 
 /**
- * A legacy message from instructions: [{ programId, keys: [{ pubkey, isSigner, isWritable }], data }]. The payer comes
- * first; accounts are grouped signer+writable, signer, writable, read-only as the runtime expects.
+ * The accounts of a message built from instructions: [{ programId, keys: [{ pubkey, isSigner, isWritable }], data }].
+ * The payer comes first; accounts are grouped signer+writable, signer, writable, read-only as the runtime expects.
  */
-export function compileLegacy({ payer, blockhash, instructions }) {
+function accountsOf(payer, instructions) {
   const metas = new Map();
   const touch = (k, signer, writable) => {
     const m = metas.get(k) ?? { signer: false, writable: false };
@@ -194,9 +277,16 @@ export function compileLegacy({ payer, blockhash, instructions }) {
   const all = [...metas.entries()];
   const group = (s, w) => all.filter(([, m]) => m.signer === s && m.writable === w).map(([k]) => k);
   const keys = [...group(true, true), ...group(true, false), ...group(false, true), ...group(false, false)];
-  const index = new Map(keys.map((k, i) => [k, i]));
-  const required = group(true, true).length + group(true, false).length;
-  const header = Uint8Array.of(required, group(true, false).length, group(false, false).length);
+  return {
+    keys,
+    index: new Map(keys.map((k, i) => [k, i])),
+    header: Uint8Array.of(group(true, true).length + group(true, false).length, group(true, false).length, group(false, false).length),
+  };
+}
+
+/** A legacy message from instructions (see accountsOf). */
+export function compileLegacy({ payer, blockhash, instructions }) {
+  const { keys, index, header } = accountsOf(payer, instructions);
   const parts = [header, compactU16(keys.length), ...keys.map((k) => base58Decode32(k)), base58Decode32(blockhash), compactU16(instructions.length)];
   for (const ix of instructions) {
     parts.push(Uint8Array.of(index.get(ix.programId)), compactU16(ix.keys.length), Uint8Array.from(ix.keys.map((a) => index.get(a.pubkey))));
@@ -205,9 +295,38 @@ export function compileLegacy({ payer, blockhash, instructions }) {
   return concat(...parts);
 }
 
-/** An unsigned transaction around a message: one empty signature slot per signer. */
+/**
+ * A v1 message from instructions (see accountsOf), with its compute budget in its config: { priorityFee (lamports),
+ * computeUnitLimit, loadedAccountsDataSizeLimit, heapSize }, each left out when null. Read back before it's returned,
+ * so it never holds what the runtime would refuse.
+ */
+export function compileV1({ payer, blockhash, instructions, config = {} }) {
+  const { keys, index, header } = accountsOf(payer, instructions);
+  if (keys.length > V1_LIMITS.addresses) throw new Error(`a v1 transaction can name ${V1_LIMITS.addresses} addresses, not ${keys.length}`);
+  if (instructions.length > V1_LIMITS.instructions) throw new Error(`a v1 transaction can hold ${V1_LIMITS.instructions} instructions`);
+  const set = (v) => v != null;
+  const mask = (set(config.priorityFee) ? V1_PRIORITY : 0) | (set(config.computeUnitLimit) ? V1_UNITS : 0)
+    | (set(config.loadedAccountsDataSizeLimit) ? V1_LOADED : 0) | (set(config.heapSize) ? V1_HEAP : 0);
+  const parts = [Uint8Array.of(V1_PREFIX), header, u32le(mask), base58Decode32(blockhash), Uint8Array.of(instructions.length, keys.length), ...keys.map((k) => base58Decode32(k))];
+  if (set(config.priorityFee)) parts.push(u64le(config.priorityFee));
+  if (set(config.computeUnitLimit)) parts.push(u32le(config.computeUnitLimit));
+  if (set(config.loadedAccountsDataSizeLimit)) parts.push(u32le(config.loadedAccountsDataSizeLimit));
+  if (set(config.heapSize)) parts.push(u32le(config.heapSize));
+  for (const ix of instructions) {
+    if (ix.keys.length > 255 || ix.data.length > 0xffff) throw new Error('an instruction is too large for a v1 transaction');
+    parts.push(Uint8Array.of(index.get(ix.programId), ix.keys.length, ix.data.length & 0xff, ix.data.length >> 8));
+  }
+  for (const ix of instructions) parts.push(Uint8Array.from(ix.keys.map((a) => index.get(a.pubkey))), ix.data);
+  const message = concat(...parts);
+  readV1MessageAt(message, 0, true);
+  return message;
+}
+
+/** An unsigned transaction around a message: one empty signature slot per signer (in front for legacy and v0, at the
+ * tail for v1). */
 export function unsignedTx(message) {
   const m = readMessage(message);
+  if (m.version === 1) return concat(message, new Uint8Array(64 * m.required));
   return concat(compactU16(m.required), new Uint8Array(64 * m.required), message);
 }
 

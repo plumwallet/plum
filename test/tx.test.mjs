@@ -56,10 +56,11 @@ test('reads a v0 transaction with a lookup table', () => {
   assert.deepEqual(Buffer.from(t.message), Buffer.from(message.serialize()));
 });
 
-test('refuses what it cannot read: v1, truncated, extra bytes, impossible headers', () => {
+test('refuses what it cannot read: a legacy one dressed as v1, truncated, extra bytes, impossible headers', () => {
   const payer = Keypair.generate();
   const { bytes } = legacyFromWeb3(payer, [SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: payer.publicKey, lamports: 1 })]);
-  assert.throws(() => readTx(Uint8Array.of(0x81, ...bytes.subarray(1))), /v1/);
+  assert.throws(() => readTx(Uint8Array.of(0x81, ...bytes.subarray(1))), /no fee payer|left over|ends too early|impossible/);
+  assert.throws(() => readTx(Uint8Array.of(0x82, ...bytes.subarray(1))));
   assert.throws(() => readTx(bytes.subarray(0, bytes.length - 3)), /ends too early/);
   assert.throws(() => readTx(Uint8Array.from([...bytes, 0])), /left over/);
   const bad = Uint8Array.from(bytes);
