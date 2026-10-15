@@ -51,8 +51,8 @@ const config = isObject;
 const address = (v) => typeof v === 'string' && ADDRESS.test(v);
 const addresses = (min, max) => (v) => Array.isArray(v) && v.length >= min && v.length <= max && v.every(address);
 const signatures = (v) => Array.isArray(v) && v.length >= 1 && v.length <= 256 && v.every((s) => typeof s === 'string' && SIGNATURE.test(s));
-// a transaction is at most 1232 bytes: 1644 characters of base64
-const transaction = (v) => typeof v === 'string' && v.length <= 1644 && /^[A-Za-z0-9+/]+={0,2}$/.test(v);
+// a transaction is at most 4096 bytes (a v1 one; legacy and v0 stop at 1232): 5464 characters of base64
+const transaction = (v) => typeof v === 'string' && v.length <= 5464 && /^[A-Za-z0-9+/]+={0,2}$/.test(v);
 const tokenFilter = (v) => isObject(v) && Object.keys(v).length === 1 && (address(v.mint) || address(v.programId));
 const simConfig = (v) => isObject(v) && (v.accounts === undefined || (isObject(v.accounts) && addresses(0, 256)(v.accounts.addresses)));
 const need = (check) => ({ check, required: true });

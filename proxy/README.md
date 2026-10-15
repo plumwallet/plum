@@ -11,7 +11,7 @@ or a log line.
 - **Only the eleven methods plum calls**, each with its params in the shape Solana takes them: `getAccountInfo`,
   `getBalance`, `getBlockHeight`, `getLatestBlockhash`, `getMultipleAccounts` (100 accounts at most),
   `getRecentPrioritizationFees`, `getSignatureStatuses`, `getSignaturesForAddress`, `getTokenAccountsByOwner`,
-  `sendTransaction` and `simulateTransaction` (a transaction of 1232 bytes at most). `test/rpc-proxy.test.mjs` checks
+  `sendTransaction` and `simulateTransaction` (a transaction of 4096 bytes at most: a v1 one; legacy and v0 stop at 1232). `test/rpc-proxy.test.mjs` checks
   this list against every call in `src/background/`, so the wallet and the proxy can't drift apart.
 - **Only from a browser extension**: an `Origin` of `moz-extension://<uuid>` or `chrome-extension://<id>`, which no
   web page can send. Pages and scripts get 403, so no site can use plum's RPC as its own through its visitors' browsers.
