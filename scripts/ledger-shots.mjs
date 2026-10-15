@@ -78,6 +78,20 @@ const SCAN = {
   ],
 };
 const PREP = { id: 'p1', chain: 'sol', preview: PREVIEW, warnings: [{ level: 'info', text: "you haven't sent to this address from plum before" }], to: '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin', amount: '0.25', symbol: 'SOL', mint: null, network: 'mainnet' };
+// a Bitcoin send spending a bc1q coin and a bc1p one: two passes on the device
+const PREP_BTC = {
+  id: 'p2', chain: 'btc', warnings: [], to: 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq', amount: '0.0005', symbol: 'BTC', network: 'mainnet',
+  preview: { chain: 'btc', amount: '50000', fee: '1398', feeRate: 6, vsize: 233, inputs: 2, taproot: 1, change: '8602', kind: 'p2wpkh', changes: [], warnings: [] },
+};
+const PREP_LIDO = {
+  id: 'l1', action: 'stake', pay: '0.5 ETH', get: 'about 0.5 stETH', approval: null, steps: ['stake'], warnings: [],
+  preview: {
+    chain: 'eth', net: { key: 'ethereum', title: 'Ethereum', symbol: 'ETH' }, sim: { ok: true }, txs: 1, warnings: [],
+    changes: [{ symbol: 'ETH', decimals: 18, delta: '-500000000000000000', verified: true }, { symbol: 'stETH', decimals: 18, delta: '499999999999999999', verified: true }],
+    call: { to: '0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84', value: '500000000000000000', name: 'submit', bytes: 36 },
+    fee: { est: '1200000000000000', max: '3000000000000000', gas: '90000' },
+  },
+};
 
 /** In the page, before its scripts: the extension API and WebHID, answering from window.__answers. */
 function standIn({ answers, hid }) {
@@ -265,6 +279,37 @@ try {
     await click(p, 'send it');
     await waitText(p, /blind signing/);
     await shot(p, 'send-confirm');
+    await p.close();
+  });
+
+  await scene('bitcoin send from both addresses', async () => {
+    const p = await open('popup.html', { answers: { 'send.prepare': PREP_BTC, 'send.submit': { __defer: 'submit' } } });
+    await click(p, 'send');
+    await p.waitForSelector('input.input');
+    const inputs = await p.$$('input.input');
+    await inputs[0].type(PREP.to);
+    await inputs[1].type('0.25');
+    await click(p, 'review');
+    await waitText(p, /asks twice/);
+    await shot(p, 'send-btc-two-passes');
+    await p.close();
+  });
+
+  await scene('lido', async () => {
+    const p = await open('popup.html', { answers: { 'lido.state': { staked: '0', usd: 0, requests: [] }, 'lido.prepare': PREP_LIDO, 'lido.submit': { __defer: 'submit' } } });
+    await click(p, 'stake');
+    // the stake screen's row of chains (the wallet's head has chain buttons too)
+    await p.waitForFunction(() => [...document.querySelectorAll('.swap-net button')].some((b) => b.textContent.trim() === 'eth'));
+    await p.evaluate(() => [...document.querySelectorAll('.swap-net button')].find((b) => b.textContent.trim() === 'eth').click());
+    await waitText(p, /lido, on ethereum/);
+    await (await p.$('input.input')).type('0.5');
+    await click(p, 'stake ETH');
+    await waitText(p, /stake it/);
+    await shot(p, 'lido-review');
+    await set(p, { 'ledger.status': { state: 'confirm', app: 'Ethereum', message: 'check the transaction on your Ledger, then approve it there. If it shows a tx hash (blind signing), it must be 0x4f1c..9be2' } });
+    await click(p, 'stake it');
+    await waitText(p, /tx hash/);
+    await shot(p, 'lido-confirm');
     await p.close();
   });
 
