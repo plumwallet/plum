@@ -425,7 +425,7 @@ test('revoking a site, or the site disconnecting: it sees no account any more', 
 const dex = fake.page('https://app.uniswap.example/');
 const evm = (method, params) => dex.request('evm', { method, params });
 
-test('an Ethereum site: chain 1 only, connects after you approve, and its connection is its own', async () => {
+test('an Ethereum site: on Ethereum until it moves, connects after you approve, and its connection is its own', async () => {
   assert.equal((await evm('eth_chainId')).result, '0x1');
   assert.equal((await evm('net_version')).result, '1');
   assert.deepEqual((await evm('eth_accounts')).result, []);
@@ -439,7 +439,14 @@ test('an Ethereum site: chain 1 only, connects after you approve, and its connec
   // the Solana side of the same site knows nothing
   assert.deepEqual((await dex.request('accounts')).result, []);
   assert.equal((await evm('wallet_switchEthereumChain', [{ chainId: '0x1' }])).result, null);
-  assert.equal((await evm('wallet_switchEthereumChain', [{ chainId: '0x89' }])).error.code, 4902);
+  const op = await evm('wallet_switchEthereumChain', [{ chainId: '0xa' }]);
+  assert.equal(op.error.code, 4902);
+  assert.match(op.error.message, /Optimism \(chain 10\): it works on Ethereum, Base, Arbitrum and Polygon only/);
+  // Polygon is one of plum's networks: the site moves there, and back
+  assert.equal((await evm('wallet_switchEthereumChain', [{ chainId: '0x89' }])).result, null);
+  assert.deepEqual([(await evm('eth_chainId')).result, (await evm('net_version')).result], ['0x89', '137']);
+  assert.equal((await evm('wallet_switchEthereumChain', [{ chainId: '0x1' }])).result, null);
+  assert.equal((await evm('eth_chainId')).result, '0x1');
   assert.match((await evm('eth_sign', [ETH_ME, '0x' + '11'.repeat(32)])).error.message, /never signs eth_sign/);
   assert.match((await evm('eth_signTransaction', [{ from: ETH_ME }])).error.message, /only to send them itself/);
   assert.match((await evm('wallet_doSomethingElse')).error.message, /doesn't support/);

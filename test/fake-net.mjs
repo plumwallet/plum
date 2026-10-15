@@ -1,27 +1,57 @@
-// A stand-in for what plum reads about Ethereum and Bitcoin, in place of fetch: a tiny Ethereum JSON-RPC node
-// (balances, nonces, code, fees, estimates, eth_call, eth_simulateV1, sends, receipts), Blockscout, mempool.space /
-// blockstream.info (addresses, coins, fees, history, broadcasts) and CoinGecko. Anything else fails like no network.
+// A stand-in for what plum reads about Ethereum and Bitcoin, in place of fetch: a tiny Ethereum JSON-RPC node per
+// network (balances, nonces, code, fees, estimates, eth_call, eth_simulateV1, sends, receipts), Blockscout per network,
+// KyberSwap's aggregator API, mempool.space / blockstream.info (addresses, coins, fees, history, broadcasts),
+// ordinals.com and CoinGecko. Anything else fails like no network.
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { Transaction as BtcTx } from 'bitcoinjs-lib';
 
-const ETH_HOSTS = new Set(['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'rpc.mevblocker.io']);
 const ESPLORA_HOSTS = new Set(['mempool.space', 'blockstream.info']);
 const hexOf = (bytes) => `0x${Buffer.from(bytes).toString('hex')}`;
 const lower = (a) => String(a).toLowerCase();
+const CHAIN_IDS = { ethereum: 1, base: 8453, arbitrum: 42161, polygon: 137 };
+const BLOCKSCOUT = { 'eth.blockscout.com': 'ethereum', 'base.blockscout.com': 'base', 'arbitrum.blockscout.com': 'arbitrum', 'polygon.blockscout.com': 'polygon' };
+const L1_ORACLE = '0x420000000000000000000000000000000000000f';
 
-export function fakeNet() {
-  const eth = {
+/** The network an RPC URL is for (the public RPCs plum knows, by host and path), or null. */
+function rpcNetwork(u) {
+  const byHost = {
+    'ethereum-rpc.publicnode.com': 'ethereum', 'eth.drpc.org': 'ethereum', 'rpc.mevblocker.io': 'ethereum',
+    'base-rpc.publicnode.com': 'base', 'mainnet.base.org': 'base', 'base.drpc.org': 'base',
+    'arbitrum-one-rpc.publicnode.com': 'arbitrum', 'arb1.arbitrum.io': 'arbitrum', 'arbitrum.drpc.org': 'arbitrum',
+    'polygon-bor-rpc.publicnode.com': 'polygon', 'polygon.drpc.org': 'polygon',
+  };
+  if (byHost[u.host]) return byHost[u.host];
+  if (u.host === '1rpc.io') return { '/eth': 'ethereum', '/base': 'base', '/arb': 'arbitrum', '/matic': 'polygon' }[u.pathname] ?? null;
+  return null;
+}
+
+function chainState(key) {
+  return {
+    key,
+    id: CHAIN_IDS[key],
     balances: new Map(), // address (lowercase) -> wei
     nonces: new Map(),
     code: new Map(), // address -> 0x code
-    tokens: new Map(), // token (lowercase) -> { decimals, balances: Map(owner -> raw), symbol, name, price }
+    tokens: new Map(), // token (lowercase) -> { decimals, balances: Map(owner -> raw), allowances: Map(`${owner}:${spender}` -> raw), symbol, name, price }
     sent: [], // raw transactions (0x hex) as they arrived
     calls: [], // [host, method]
     baseFee: 1_000_000_000n,
     tip: 1_500_000_000n,
-    /** (call) => eth_simulateV1's first call result, or null to answer "method not found" */
+    /** the gas eth_estimateGas answers: (call) => bigint, or null for 21,000 (50,000 with data) */
+    estimate: null,
+    /** Base's fee for a transaction's room on Ethereum (GasPriceOracle.getL1Fee) */
+    l1Fee: 7_000_000_000n,
+    /** (call, index, calls) => eth_simulateV1's result for that call, or null to answer "method not found" */
     simulate: null,
+    /** a hash -> receipt status ('0x1', '0x0', or null for not yet) */
+    receipts: new Map(),
+    blockscout: { tokens: new Map(), txs: new Map() }, // owner (lowercase) -> token-balances items / transaction items
   };
+}
+
+export function fakeNet() {
+  const evm = Object.fromEntries(Object.keys(CHAIN_IDS).map((k) => [k, chainState(k)]));
+  const eth = evm.ethereum;
   const btc = {
     stats: new Map(), // address -> { funded, spent, txs }
     utxos: new Map(), // address -> [{ txid, vout, value, confirmed }]
@@ -32,45 +62,59 @@ export function fakeNet() {
   // ordinals.com's recursive endpoints: 'txid:vout' -> { inscriptions: [id], runes: { NAME: { amount, divisibility } } },
   // inscription id -> satpoint; `down` makes it answer 503
   const ord = { utxos: new Map(), satpoints: new Map(), down: false, calls: [] };
-  const blockscout = { tokens: new Map() }; // owner (lowercase) -> token-balances items
+  const blockscout = eth.blockscout; // Ethereum's (as before)
+  /** KyberSwap: `routes(query)` and `build(body)` answer as the API would (an object, or { status, body }); `asked`
+   * lists [path, query or body]. */
+  const kyber = { routes: null, build: null, asked: [] };
   const reply = (body, status = 200) => ({ ok: status < 400, status, text: async () => (typeof body === 'string' ? body : JSON.stringify(body)), json: async () => body });
 
-  function ethMethod(method, params) {
+  function ethMethod(c, method, params) {
     switch (method) {
-      case 'eth_chainId': return '0x1';
-      case 'eth_getBalance': return `0x${(eth.balances.get(lower(params[0])) ?? 0n).toString(16)}`;
-      case 'eth_getTransactionCount': return `0x${(eth.nonces.get(lower(params[0])) ?? 0n).toString(16)}`;
-      case 'eth_getCode': return eth.code.get(lower(params[0])) ?? '0x';
-      case 'eth_getBlockByNumber': return { number: '0x100', baseFeePerGas: `0x${eth.baseFee.toString(16)}` };
-      case 'eth_feeHistory': return { baseFeePerGas: [], reward: [[`0x${eth.tip.toString(16)}`], [`0x${eth.tip.toString(16)}`], [`0x${eth.tip.toString(16)}`]] };
-      case 'eth_estimateGas': return params[0]?.data && params[0].data !== '0x' ? '0xc350' : '0x5208';
+      case 'eth_chainId': return `0x${c.id.toString(16)}`;
+      case 'eth_getBalance': return `0x${(c.balances.get(lower(params[0])) ?? 0n).toString(16)}`;
+      case 'eth_getTransactionCount': return `0x${(c.nonces.get(lower(params[0])) ?? 0n).toString(16)}`;
+      case 'eth_getCode': return c.code.get(lower(params[0])) ?? '0x';
+      case 'eth_getBlockByNumber': return { number: '0x100', baseFeePerGas: `0x${c.baseFee.toString(16)}` };
+      case 'eth_feeHistory': return { baseFeePerGas: [], reward: [[`0x${c.tip.toString(16)}`], [`0x${c.tip.toString(16)}`], [`0x${c.tip.toString(16)}`]] };
+      case 'eth_estimateGas': {
+        if (c.estimate) return `0x${c.estimate(params[0]).toString(16)}`;
+        return params[0]?.data && params[0].data !== '0x' ? '0xc350' : '0x5208';
+      }
       case 'eth_call': {
         const { to, data } = params[0];
-        const t = eth.tokens.get(lower(to));
+        if (lower(to) === L1_ORACLE && data.startsWith('0x49948e0e')) return `0x${c.l1Fee.toString(16).padStart(64, '0')}`;
+        const t = c.tokens.get(lower(to));
         if (!t) throw Object.assign(new Error('execution reverted'), { rpc: { code: 3, message: 'execution reverted' } });
         if (data === '0x313ce567') return `0x${t.decimals.toString(16).padStart(64, '0')}`;
         if (data.startsWith('0x70a08231')) return `0x${(t.balances.get(`0x${data.slice(-40)}`) ?? 0n).toString(16).padStart(64, '0')}`;
+        if (data.startsWith('0xdd62ed3e')) return `0x${(t.allowances?.get(`0x${data.slice(34, 74)}:0x${data.slice(-40)}`) ?? 0n).toString(16).padStart(64, '0')}`;
         return '0x';
       }
       case 'eth_simulateV1': {
-        if (!eth.simulate) throw Object.assign(new Error('the method eth_simulateV1 does not exist/is not available'), { rpc: { code: -32601, message: 'the method eth_simulateV1 does not exist/is not available' } });
-        return [{ calls: [eth.simulate(params[0].blockStateCalls[0].calls[0])] }];
+        if (!c.simulate) throw Object.assign(new Error('the method eth_simulateV1 does not exist/is not available'), { rpc: { code: -32601, message: 'the method eth_simulateV1 does not exist/is not available' } });
+        const calls = params[0].blockStateCalls[0].calls;
+        return [{ calls: calls.map((x, i) => c.simulate(x, i, calls)) }];
       }
       case 'eth_sendRawTransaction': {
-        eth.sent.push(params[0]);
+        c.sent.push(params[0]);
         return hexOf(keccak_256(Buffer.from(params[0].slice(2), 'hex')));
       }
-      case 'eth_getTransactionReceipt': return { status: '0x1' };
+      case 'eth_getTransactionReceipt': {
+        const st = c.receipts.has(lower(params[0])) ? c.receipts.get(lower(params[0])) : '0x1';
+        return st == null ? null : { status: st };
+      }
       default: throw Object.assign(new Error(`no ${method}`), { rpc: { code: -32601, message: `no ${method}` } });
     }
   }
 
   async function fetchFake(url, opts = {}) {
     const u = new URL(String(url));
-    if (ETH_HOSTS.has(u.host)) {
+    const key = rpcNetwork(u);
+    if (key) {
+      const c = evm[key];
       const answer = (req) => {
-        eth.calls.push([u.host, req.method]);
-        try { return { jsonrpc: '2.0', id: req.id, result: ethMethod(req.method, req.params ?? []) }; } catch (e) {
+        c.calls.push([u.host, req.method]);
+        try { return { jsonrpc: '2.0', id: req.id, result: ethMethod(c, req.method, req.params ?? []) }; } catch (e) {
           return { jsonrpc: '2.0', id: req.id, error: e.rpc ?? { code: -32000, message: e.message } };
         }
       };
@@ -99,18 +143,30 @@ export function fakeNet() {
       if ((m = /^\/tx\/([0-9a-f]{64})$/.exec(path))) return btc.txs.has(m[1]) ? reply({ txid: m[1], vout: btc.txs.get(m[1]) }) : reply('Transaction not found', 404);
       return reply({ message: 'not found' }, 404);
     }
-    if (u.host === 'eth.blockscout.com') {
+    if (BLOCKSCOUT[u.host]) {
+      const c = evm[BLOCKSCOUT[u.host]];
       let m;
-      if ((m = /^\/api\/v2\/addresses\/([^/]+)\/token-balances$/.exec(u.pathname))) return reply(blockscout.tokens.get(lower(m[1])) ?? []);
-      if ((m = /^\/api\/v2\/addresses\/([^/]+)\/(transactions|token-transfers)$/.exec(u.pathname))) return reply({ items: [] });
+      if ((m = /^\/api\/v2\/addresses\/([^/]+)\/token-balances$/.exec(u.pathname))) return reply(c.blockscout.tokens.get(lower(m[1])) ?? []);
+      if ((m = /^\/api\/v2\/addresses\/([^/]+)\/transactions$/.exec(u.pathname))) return reply({ items: c.blockscout.txs.get(lower(m[1])) ?? [] });
+      if ((m = /^\/api\/v2\/addresses\/([^/]+)\/token-transfers$/.exec(u.pathname))) return reply({ items: [] });
       if ((m = /^\/api\/v2\/tokens\/([^/]+)$/.exec(u.pathname))) {
-        const t = eth.tokens.get(lower(m[1]));
+        const t = c.tokens.get(lower(m[1]));
         return t ? reply({ symbol: t.symbol, name: t.name, exchange_rate: t.price ?? null, decimals: String(t.decimals) }) : reply({ message: 'not found' }, 404);
       }
-      if (u.pathname === '/api/v2/stats') return reply({ coin_price: '2500', coin_price_change_percentage: 1.5 });
+      if (u.pathname === '/api/v2/stats') return reply({ coin_price: c.key === 'polygon' ? '0.25' : '2500', coin_price_change_percentage: 1.5 });
       return reply({ message: 'not found' }, 404);
     }
-    if (u.host === 'api.coingecko.com') return reply({ bitcoin: { usd: 80000, usd_24h_change: -1 }, ethereum: { usd: 2500, usd_24h_change: 2 } });
+    if (u.host === 'aggregator-api.kyberswap.com') {
+      const m = /^\/([a-z]+)\/api\/v1\/(routes|route\/build)$/.exec(u.pathname);
+      if (!m) return reply({ code: 404, message: 'not found' }, 404);
+      const asked = m[2] === 'routes' ? Object.fromEntries(u.searchParams) : JSON.parse(opts.body);
+      kyber.asked.push([`${m[1]}/${m[2]}`, asked]);
+      const fn = m[2] === 'routes' ? kyber.routes : kyber.build;
+      if (!fn) return reply({ code: 4000, message: 'no route' }, 400);
+      const out = fn(asked, m[1]);
+      return out?.status ? reply(out.body, out.status) : reply({ code: 0, message: 'successfully', data: out });
+    }
+    if (u.host === 'api.coingecko.com') return reply({ bitcoin: { usd: 80000, usd_24h_change: -1 }, ethereum: { usd: 2500, usd_24h_change: 2 }, 'polygon-ecosystem-token': { usd: 0.25, usd_24h_change: -3 } });
     if (u.host === 'ordinals.com') {
       ord.calls.push(u.pathname);
       if (ord.down) return reply('down', 503);
@@ -122,5 +178,5 @@ export function fakeNet() {
     throw new Error('no network in tests');
   }
 
-  return { eth, btc, ord, blockscout, fetch: fetchFake };
+  return { eth, evm, btc, ord, blockscout, kyber, fetch: fetchFake };
 }

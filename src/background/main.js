@@ -20,6 +20,8 @@ import * as B from './btc.js';
 import { prepareSpend, spendable } from './btc-send.js';
 import { BTC_APPROVALS, bitcoinSites, ownerOf } from './btc-site.js';
 import * as E from './eth.js';
+import { EVM_NETWORKS, MAINNET, chainHex, networkById, networkByKey, unsupportedChain } from './evm-chains.js';
+import { forgetSite, moveSite, siteNetwork } from './evm-site.js';
 import { isMnemonic, newMnemonic, normalizeMnemonic } from './keys.js';
 import { pool } from './net.js';
 import { checkHost, fetchLists } from './phishing.js';
@@ -66,14 +68,19 @@ async function net(name) {
   return { network, url, chain: NETWORKS[network].chain, rpc: client(url), mainnet: network === 'mainnet' };
 }
 
-/** The Ethereum RPCs to ask: yours alone if you set one (checked like Solana's), else plum's public ones in turn. */
-async function ethUrls() {
+/** The RPCs to ask on an Ethereum network: yours alone if you set one for it (checked like Solana's), else plum's
+ * public ones in turn. */
+async function ethUrls(net = MAINNET) {
   const s = await getSettings();
-  if (s.ethRpc) {
-    try { return [checkRpcUrl(s.ethRpc)]; } catch { /* a bad saved URL is ignored */ }
+  const custom = net === MAINNET ? s.ethRpc : s.evmRpc?.[net.key];
+  if (custom) {
+    try { return [checkRpcUrl(custom)]; } catch { /* a bad saved URL is ignored */ }
   }
-  return E.PUBLIC_RPCS;
+  return net.rpcs;
 }
+
+/** Where a signed transaction goes: on Ethereum, MEV Blocker first; then the network's RPCs. */
+const sendUrls = async (net) => [...net.private, ...(await ethUrls(net))];
 
 async function jupOpts() {
   const s = await getSettings();
@@ -129,6 +136,7 @@ async function trust(origin, address, chain = 'sol') {
  * before it was disconnected is signed after. */
 async function untrust(origin, chain = null) {
   for (const r of [...pending.values()]) if (r.origin === origin && (!chain || r.chain === chain)) { pending.delete(r.id); r.reject(rejected()); }
+  if (!chain || chain === 'eth') await forgetSite(origin);
   const all = await sites();
   if (!all[origin]) return;
   if (chain) all[origin] = { ...all[origin], [FIELD[chain]]: [] };
@@ -287,6 +295,13 @@ async function approvalView() {
   if (r.kind === 'signIn') view.signIn = r.signInView;
   if (r.kind === 'evmTyped') view.typed = r.typedView;
   if (r.kind === 'evmTx') view.evmTx = r.txView;
+  if (r.chain === 'eth') {
+    const n = networkByKey(r.network) ?? MAINNET;
+    view.evmNet = { key: n.key, title: n.title, id: n.id, tag: n.tag, symbol: n.native.symbol };
+    // the site moved since it asked: this request stays on the network it was made on, and the window says so
+    const now = await siteNetwork(r.origin);
+    if (now !== n) view.evmNet.siteNow = now.title;
+  }
   return view;
 }
 
@@ -295,7 +310,7 @@ async function approvalPreview(id) {
   if (!r) return null;
   if (r.kind === 'evmTx') {
     // what's previewed is what's signed: the gas limit and fees it was simulated with are kept for the signature
-    r.previews ??= evmPreview(r.account, r.call).then(({ signWith, ...p }) => { r.signWith = signWith; return [p]; });
+    r.previews ??= evmPreview(r.account, r.call, networkByKey(r.network) ?? MAINNET).then(({ signWith, ...p }) => { r.signWith = signWith; return [p]; });
     return r.previews;
   }
   if (r.kind === 'btcPsbt' || r.kind === 'btcSend') {
@@ -389,7 +404,7 @@ async function perform(r) {
   }
   if (r.kind === 'evmMessage') return E.sigHex(await W.signEthAs(r.account, E.personalDigest(r.messageBytes)));
   if (r.kind === 'evmTyped') return E.sigHex(await W.signEthAs(r.account, E.typedDigest(r.typed)));
-  if (r.kind === 'evmTx') return sendEth(r.account, r.call, r.signWith);
+  if (r.kind === 'evmTx') return sendEth(r.account, r.call, r.signWith, networkByKey(r.network) ?? MAINNET);
   throw fail('unknown request');
 }
 
@@ -430,8 +445,8 @@ async function follow(signature, b64, rpc) {
 }
 
 /** Follow an Ethereum or Bitcoin send until it's in a block (or we stop looking). */
-async function followOther(chain, id) {
-  const urls = chain === 'eth' ? await ethUrls() : null;
+async function followOther(chain, id, net = MAINNET) {
+  const urls = chain === 'eth' ? await ethUrls(net) : null;
   const until = Date.now() + (chain === 'eth' ? 180_000 : 1_800_000);
   while (Date.now() < until) {
     await new Promise((r) => setTimeout(r, chain === 'eth' ? 4000 : 20_000));
@@ -653,11 +668,14 @@ function evmMessageBytes(m) {
 }
 
 /** A transaction a page wants sent, checked and put in plum's terms: { to, value, data, gas } (the nonce and fees are
- * always plum's own). */
-function evmCall(tx, from) {
+ * always plum's own, and so is the network: the one the site is on). */
+function evmCall(tx, from, net = MAINNET) {
   if (!tx || typeof tx !== 'object') throw evmErr('the transaction is malformed', -32602);
   if (tx.from != null && !E.sameAddress(tx.from, from)) throw evmErr("that transaction is from an address that isn't the one connected", 4100);
-  if (tx.chainId != null && BigInt(tx.chainId) !== 1n) throw evmErr('Plum is on Ethereum (chain 1) only', 4901);
+  if (tx.chainId != null) {
+    const asked = networkById(tx.chainId);
+    if (asked !== net) throw evmErr(`this transaction is for ${asked ? `${asked.title} (chain ${asked.id})` : `chain ${String(tx.chainId).slice(0, 20)}`}, but this site is on ${net.title} (chain ${net.id}): switch networks in the site first`, 4901);
+  }
   const to = tx.to == null || tx.to === '' ? null : E.checkAddress(String(tx.to));
   const num = (v, what) => { try { const n = v == null ? 0n : BigInt(v); if (n < 0n) throw new Error(); return n; } catch { throw evmErr(`the transaction's ${what} is malformed`, -32602); } };
   const data = tx.data ?? tx.input ?? '0x';
@@ -668,18 +686,24 @@ function evmCall(tx, from) {
 
 async function handleEvm(origin, method, params, ctx) {
   const p = Array.isArray(params) ? params : params == null ? [] : [params];
-  if (method === 'eth_chainId') return E.CHAIN_HEX;
-  if (method === 'net_version') return '1';
-  if (EVM_READS.has(method)) return E.ethRpc(await ethUrls(), method, p);
+  // the network this site is on: whatever it asks for now is for that network, and stays so while it waits
+  const net = await siteNetwork(origin);
+  if (method === 'eth_chainId') return chainHex(net);
+  if (method === 'net_version') return String(net.id);
+  if (EVM_READS.has(method)) return E.ethRpc(await ethUrls(net), method, p);
   const w = await W.activeWallet();
   const me = w?.chains.eth?.address ?? null;
   if (method === 'eth_accounts') return me && (await trusted(origin, me, 'eth')) ? [me] : [];
   if (method === 'wallet_getPermissions') return me && (await trusted(origin, me, 'eth')) ? [{ parentCapability: 'eth_accounts', caveats: [{ type: 'restrictReturnedAccounts', value: [me] }] }] : [];
   if (method === 'wallet_revokePermissions') { await untrust(origin, 'eth'); return null; }
   if (method === 'wallet_switchEthereumChain' || method === 'wallet_addEthereumChain') {
-    const id = String(p[0]?.chainId ?? '').toLowerCase();
-    if (id === '0x1' || id === '0x01') return null;
-    throw evmErr('Plum is on Ethereum (chain 1) only', method === 'wallet_switchEthereumChain' ? 4902 : 4200);
+    // only the networks plum knows, on its own RPCs: the RPCs, names and explorers a site sends along are never used
+    const asked = p[0] && typeof p[0] === 'object' ? p[0].chainId : undefined;
+    if (!networkById(asked)) throw evmErr(unsupportedChain(asked), method === 'wallet_switchEthereumChain' ? 4902 : 4200);
+    const to = await moveSite(origin, asked);
+    // the site's other tabs hear of it too (they ask again and see chainChanged)
+    if (to !== net) await broadcast('chainChanged');
+    return null;
   }
   if (method === 'eth_sign') throw evmErr('Plum never signs eth_sign: it signs a raw hash blind, which can be a transaction that empties your wallet', 4200);
   if (method === 'eth_signTransaction') throw evmErr("Plum signs transactions only to send them itself (eth_sendTransaction)", 4200);
@@ -699,7 +723,7 @@ async function handleEvm(origin, method, params, ctx) {
       await trust(origin, me, 'eth');
       accounts = [me];
     } else {
-      accounts = await approval({ chain: 'eth', kind: 'evmConnect', origin, risk, account: me, ctx, network: 'mainnet' });
+      accounts = await approval({ chain: 'eth', kind: 'evmConnect', origin, risk, account: me, ctx, network: net.key });
     }
     return method === 'wallet_requestPermissions' ? [{ parentCapability: 'eth_accounts', caveats: [{ type: 'restrictReturnedAccounts', value: accounts }] }] : accounts;
   }
@@ -707,7 +731,7 @@ async function handleEvm(origin, method, params, ctx) {
   // everything else signs: a connected site, for the address it was given
   if (!me || !(await trusted(origin, me, 'eth'))) throw evmErr('connect to Plum first', 4100);
   const risk = await riskOf(origin);
-  const base = { chain: 'eth', origin, risk, account: me, ctx, network: 'mainnet' };
+  const base = { chain: 'eth', origin, risk, account: me, ctx, network: net.key };
 
   if (method === 'personal_sign') {
     // [message, address]; some sites send them the other way round
@@ -734,7 +758,7 @@ async function handleEvm(origin, method, params, ctx) {
       primaryType: typed.primaryType,
       domain: { name: d.name != null ? String(d.name).slice(0, 60) : null, version: d.version != null ? String(d.version).slice(0, 20) : null, chainId: d.chainId != null ? String(d.chainId).slice(0, 20) : null, contract: typeof d.verifyingContract === 'string' ? d.verifyingContract : null },
       lines,
-      warnings: E.typedWarnings(typed, { owner: me }),
+      warnings: E.typedWarnings(typed, { owner: me, chainId: net.id }),
     };
     if (typeof d.name === 'string' && hasHidden(d.name)) view.warnings.push({ level: 'danger', text: 'its name hides characters that change what you read' });
     // what you sign is what you see: anything plum can't show you counts as a danger
@@ -744,7 +768,7 @@ async function handleEvm(origin, method, params, ctx) {
     return approval({ ...base, kind: 'evmTyped', typed, typedView: view });
   }
   if (method === 'eth_sendTransaction') {
-    const call = evmCall(p[0], me);
+    const call = evmCall(p[0], me, net);
     const decoded = E.decodeCall(call.data);
     return approval({ ...base, kind: 'evmTx', call, txView: { to: call.to, value: call.value.toString(), data: call.data.length > 2 ? `${call.data.slice(0, 10)}... (${(call.data.length - 2) / 2} bytes)` : null, call: decoded ? { name: decoded.name ?? null, selector: decoded.selector } : null } });
   }
@@ -753,32 +777,33 @@ async function handleEvm(origin, method, params, ctx) {
 
 /** What a page's Ethereum transaction would do, for the approval window: simulated on the latest block when an RPC can
  * (what changes in your wallet, the approvals it gives), its call read, its fee, and every danger in words. */
-async function evmPreview(owner, call) {
-  const urls = await ethUrls();
+async function evmPreview(owner, call, net = MAINNET) {
+  const urls = await ethUrls(net);
+  const coin = net.native.symbol;
   const warnings = [];
   const decoded = E.decodeCall(call.data);
   // the gas limit and fees plum will sign with, first: the simulation runs that transaction, and it's what gets signed
-  const fees = await E.feeQuote(urls).catch(() => null);
+  const fees = await E.feeQuote(urls, net).catch(() => null);
   let gas = null;
   try { gas = await gasLimit(urls, owner, call); } catch { gas = null; }
   let sim = null;
   try { sim = await E.simulate(urls, owner, { ...call, gas, fees }); } catch (e) { warnings.push({ level: 'danger', text: `plum couldn't simulate this: ${e.message}` }); }
   if (!gas && sim?.gasUsed) gas = (sim.gasUsed * 13n) / 10n;
   const tokens = [...new Set([...(sim?.changes ?? []).map((c) => c.token).filter(Boolean), ...(sim?.approvals ?? []).map((a) => a.token)])];
-  const meta = tokens.length ? await E.describeTokens(urls, tokens.map((t) => E.checkAddress(t))) : new Map();
+  const meta = tokens.length ? await E.describeTokens(urls, tokens.map((t) => E.checkAddress(t)), net) : new Map();
   const label = (t) => { const m = meta.get(t ? E.checkAddress(t) : null); return m?.symbol ? (m.price ? m.symbol : `${m.symbol} (${short(t, 6)})`) : short(t ?? '', 6); };
   const changes = (sim?.changes ?? []).map((c) => {
-    if (!c.token) return { symbol: 'ETH', decimals: 18, delta: c.delta.toString(), verified: true };
+    if (!c.token) return { symbol: coin, decimals: 18, delta: c.delta.toString(), verified: true };
     const m = meta.get(E.checkAddress(c.token));
     return { symbol: label(c.token), decimals: m?.decimals ?? 0, delta: c.delta.toString(), verified: !!m?.price, token: c.token };
   });
   if (sim && !sim.ok) warnings.push({ level: 'danger', text: `this transaction would fail (${sim.error}): sending it can only cost you the fee` });
-  if (!sim) warnings.push({ level: 'warn', text: "plum's RPC can't simulate this transaction, so what changes in your wallet isn't shown: read what it calls below" });
-  // ETH only leaves your wallet as the transaction's own value: if the simulation traced no ETH, show that value
+  if (!sim) warnings.push({ level: 'warn', text: `this wasn't simulated: plum's ${net.title} RPC can't simulate it, so what changes in your wallet isn't shown. Read what it calls below.` });
+  // the coin only leaves your wallet as the transaction's own value: if the simulation traced none, show that value
   // leaving rather than "no change"
   if (sim?.ok && call.value > 0n && !sim.native) {
-    changes.unshift({ symbol: 'ETH', decimals: 18, delta: (-call.value).toString(), verified: true });
-    warnings.push({ level: 'warn', text: "plum's RPC didn't trace ETH, so the ETH shown leaving is the transaction's own value (anything it sends back isn't shown)" });
+    changes.unshift({ symbol: coin, decimals: 18, delta: (-call.value).toString(), verified: true });
+    warnings.push({ level: 'warn', text: `plum's RPC didn't trace ${coin}, so the ${coin} shown leaving is the transaction's own value (anything it sends back isn't shown)` });
   }
   for (const a of sim?.approvals ?? []) {
     if (a.nft != null) continue;
@@ -797,9 +822,12 @@ async function evmPreview(owner, call) {
     if (decoded.name === 'approve (Permit2)') warnings.push({ level: 'danger', text: `a Permit2 approval: it lets ${decoded.args?.[1] ?? 'a spender'} move your tokens without asking you again.` });
   }
   if (!call.to) warnings.push({ level: 'warn', text: 'this deploys a new contract from your wallet' });
-  const fee = fees && gas ? { est: (gas * (fees.base + fees.tip)).toString(), max: (gas * fees.maxFee).toString(), gas: gas.toString() } : null;
+  // an OP Stack network adds a fee for the transaction's room on Ethereum
+  const l1 = fees && gas ? (await E.l1Fee(urls, { nonce: 0n, maxPriorityFeePerGas: fees.tip, maxFeePerGas: fees.maxFee, gas, to: call.to, value: call.value, data: call.data }, net)) ?? 0n : 0n;
+  const fee = fees && gas ? { est: (gas * (fees.base + fees.tip) + l1).toString(), max: (gas * fees.maxFee + l1).toString(), gas: gas.toString() } : null;
   return {
     chain: 'eth',
+    net: { key: net.key, title: net.title, symbol: coin },
     sim: { ok: sim ? sim.ok : null, error: sim?.error ?? null },
     changes, warnings, fee,
     call: { to: call.to, value: call.value.toString(), name: decoded?.name ?? (call.data.length > 2 ? `0x${decoded?.selector ?? call.data.slice(2, 10)}` : null), bytes: (call.data.length - 2) / 2 },
@@ -820,29 +848,33 @@ async function gasLimit(urls, from, call) {
   return ours;
 }
 
-/** Sign and send an Ethereum transaction from one of your wallets: plum sets the nonce and the fee, the wallet's key
- * is its only signer (checked by recovering the sender from the signature), MEV Blocker first. */
-async function sendEth(from, call, reviewed = null) {
-  const urls = await ethUrls();
-  const [nonceHex, fees, gas] = await Promise.all([E.ethRpc(urls, 'eth_getTransactionCount', [from, 'pending']), E.feeQuote(urls), gasLimit(urls, from, call)]);
+/** Sign and send an Ethereum transaction from one of your wallets, on a network: plum sets the nonce and the fee, the
+ * wallet's key is its only signer (checked by recovering the sender from the signature), MEV Blocker first on
+ * Ethereum. */
+async function sendEth(from, call, reviewed = null, net = MAINNET) {
+  const urls = await ethUrls(net);
+  const [nonceHex, fees, gas] = await Promise.all([E.ethRpc(urls, 'eth_getTransactionCount', [from, 'pending']), E.feeQuote(urls, net), gasLimit(urls, from, call)]);
   if (reviewed) {
     // the gas limit and fee cap you reviewed are the ones signed, while the chain still agrees with them
     if (gas > reviewed.gas) throw fail('this transaction needs more gas than when you reviewed it: reject it and ask again');
     if (fees.base > reviewed.fees.maxFee) throw fail('the network fee has risen past what you reviewed: reject it and ask again');
   }
   const use = reviewed ?? { gas, fees };
-  const tx = { nonce: BigInt(nonceHex), maxPriorityFeePerGas: use.fees.tip, maxFeePerGas: use.fees.maxFee, gas: use.gas, to: call.to, value: call.value, data: call.data };
+  const tx = { chainId: net.id, nonce: BigInt(nonceHex), maxPriorityFeePerGas: use.fees.tip, maxFeePerGas: use.fees.maxFee, gas: use.gas, to: call.to, value: call.value, data: call.data };
   return signAndSendEth(from, tx);
 }
 
+/** Sign a transaction (its chainId says which network) with your key alone, and send it there. */
 async function signAndSendEth(from, tx) {
+  const net = networkById(tx.chainId ?? MAINNET.id);
+  if (!net) throw fail("plum doesn't work on that network; nothing was signed");
   const digest = E.txDigest(tx);
   const sig = await W.signEthAs(from, digest);
   if (E.signerOf(digest, sig) !== from) throw fail('plum signed with the wrong key; nothing was sent');
   const raw = E.signedTx(tx, sig);
-  const hash = await E.sendRaw(raw);
-  sent.set(hash, { chain: 'eth', status: 'sent', at: Date.now() });
-  followOther('eth', hash).catch(() => {});
+  const hash = await E.sendRaw(raw, await sendUrls(net));
+  sent.set(hash, { chain: 'eth', net: net.key, status: 'sent', at: Date.now() });
+  followOther('eth', hash, net).catch(() => {});
   return hash;
 }
 
@@ -1049,16 +1081,21 @@ async function erc20Balance(urls, token, owner) {
   return BigInt(r && r !== '0x' ? r : '0x0');
 }
 
-async function prepareEthSend({ token, mint, to, amount, max = false }) {
+/** When an OP Stack network's fee oracle doesn't answer: a fee for the room on Ethereum far above what it costs. */
+const L1_FEE_GUESS = 10_000_000_000_000n;
+
+async function prepareEthSend({ token, mint, to, amount, max = false, net: netKey = null }) {
   token = token ?? mint ?? null;
+  const net = networkByKey(netKey) ?? MAINNET;
+  const coin = net.native.symbol;
   const { address: from } = await requireActive('eth');
-  const urls = await ethUrls();
+  const urls = await ethUrls(net);
   const dest = E.checkAddress(to);
   const warnings = await recipientChecks('eth', dest, from);
   const [code, weiHex, fees, nonceHex] = await Promise.all([
     E.ethRpc(urls, 'eth_getCode', [dest, 'latest']),
     E.ethRpc(urls, 'eth_getBalance', [from, 'latest']),
-    E.feeQuote(urls),
+    E.feeQuote(urls, net),
     E.ethRpc(urls, 'eth_getTransactionCount', [from, 'pending']),
   ]);
   const wei = BigInt(weiHex);
@@ -1070,40 +1107,44 @@ async function prepareEthSend({ token, mint, to, amount, max = false }) {
     raw = max ? held : parseUnits(amount, decimals);
     if (raw <= 0n) throw fail(max ? "you don't hold any of this token" : 'type an amount above zero');
     if (raw > held) throw fail(`you have ${formatUnits(held, decimals)} of it`);
-    symbol = (await E.tokenMeta(t)).symbol ?? short(t, 6);
+    symbol = (await E.tokenMeta(t, net)).symbol ?? short(t, 6);
     if (dest.toLowerCase() === t.toLowerCase()) throw fail("that's the token's own contract: tokens sent there are lost");
     call = { to: t, value: 0n, data: E.transferData(dest, raw) };
   } else {
     decimals = 18;
-    symbol = 'ETH';
+    symbol = coin;
     raw = max ? null : parseUnits(amount, 18);
     if (raw != null && raw <= 0n) throw fail('type an amount above zero');
     call = { to: dest, value: raw ?? 0n, data: '0x' };
   }
   const isContract = typeof code === 'string' && code !== '0x' && code !== '0x0';
-  if (isContract && !token) warnings.push({ level: 'warn', text: "that address is a contract, not a person's wallet: only send ETH to it if you know it takes ETH" });
+  if (isContract && !token) warnings.push({ level: 'warn', text: `that address is a contract, not a person's wallet: only send ${coin} to it if you know it takes ${coin}` });
+  if (net !== MAINNET) warnings.push({ level: 'info', text: `this goes out on ${net.title}: check that whoever you send to uses ${net.title} (an exchange's address may only take Ethereum)` });
   let gas;
-  if (!token && !isContract) gas = 21_000n;
+  // a plain send on Ethereum is always 21,000 gas; elsewhere it's asked (Arbitrum's include its Ethereum data cost)
+  if (!token && !isContract && net === MAINNET) gas = 21_000n;
   else {
     try { gas = (BigInt(await E.ethRpc(urls, 'eth_estimateGas', [{ from, to: call.to, value: E.qty(call.value), data: call.data }])) * 125n) / 100n; } catch (e) { throw fail(`this send would fail: ${e.message}`); }
   }
-  const feeMax = gas * fees.maxFee;
+  // what Base charges for the transaction's room on Ethereum (asked with the largest value it could carry)
+  const l1 = net.l1Fee ? ((await E.l1Fee(urls, { nonce: BigInt(nonceHex), maxPriorityFeePerGas: fees.tip, maxFeePerGas: fees.maxFee, gas, ...call, value: token ? 0n : wei }, net)) ?? L1_FEE_GUESS) : 0n;
+  const feeMax = gas * fees.maxFee + l1 * 2n;
   if (!token && max) {
     // everything but the most the fee can cost
     raw = wei - feeMax;
-    if (raw <= 0n) throw fail("there isn't enough ETH to cover the network fee");
+    if (raw <= 0n) throw fail(`there isn't enough ${coin} to cover the network fee`);
     call.value = raw;
   }
-  if (wei < feeMax + (token ? 0n : raw)) throw fail(`not enough ETH for this and its network fee: you have ${formatUnits(wei, 18)}, it needs up to ${formatUnits(feeMax + (token ? 0n : raw), 18)}`);
-  const tx = { nonce: BigInt(nonceHex), maxPriorityFeePerGas: fees.tip, maxFeePerGas: fees.maxFee, gas, ...call };
+  if (wei < feeMax + (token ? 0n : raw)) throw fail(`not enough ${coin} for this and its network fee: you have ${formatUnits(wei, 18)}, it needs up to ${formatUnits(feeMax + (token ? 0n : raw), 18)}`);
+  const tx = { chainId: net.id, nonce: BigInt(nonceHex), maxPriorityFeePerGas: fees.tip, maxFeePerGas: fees.maxFee, gas, ...call };
   const preview = {
-    chain: 'eth', sim: { ok: true, error: null },
+    chain: 'eth', net: { key: net.key, title: net.title, symbol: coin }, sim: { ok: true, error: null },
     changes: [{ symbol, decimals, delta: (-raw).toString(), verified: true }],
-    fee: { est: (gas * (fees.base + fees.tip)).toString(), max: feeMax.toString(), gas: gas.toString() },
+    fee: { est: (gas * (fees.base + fees.tip) + l1).toString(), max: feeMax.toString(), gas: gas.toString() },
     warnings: [], call: { to: call.to, value: call.value.toString(), name: token ? 'transfer' : null, bytes: (call.data.length - 2) / 2 },
   };
   const id = keep({ chain: 'eth', tx, from, recipient: dest });
-  return { id, chain: 'eth', preview, warnings, to: dest, amount: formatUnits(raw, decimals), symbol, mint: token };
+  return { id, chain: 'eth', net: net.key, netTitle: net.title, preview, warnings, to: dest, amount: formatUnits(raw, decimals), symbol, mint: token };
 }
 
 async function prepareBtcSend({ to, amount, speed = 'normal', max = false }) {
@@ -1123,13 +1164,19 @@ async function prepareBtcSend({ to, amount, speed = 'normal', max = false }) {
 }
 
 /** The most you can send of something (what you hold, less what the fee could cost). */
-async function maxSend({ chain = 'sol', token = null, to = null, speed = 'normal' }) {
+async function maxSend({ chain = 'sol', token = null, to = null, speed = 'normal', net: netKey = null }) {
   if (chain === 'eth') {
+    const net = networkByKey(netKey) ?? MAINNET;
     const { address: from } = await requireActive('eth');
-    const urls = await ethUrls();
+    const urls = await ethUrls(net);
     if (token) { const t = E.checkAddress(token); return formatUnits(await erc20Balance(urls, t, from), await E.tokenDecimals(urls, t)); }
-    const [wei, fees] = await Promise.all([E.ethRpc(urls, 'eth_getBalance', [from, 'latest']).then(BigInt), E.feeQuote(urls)]);
-    const left = wei - 21_000n * fees.maxFee;
+    const [wei, fees] = await Promise.all([E.ethRpc(urls, 'eth_getBalance', [from, 'latest']).then(BigInt), E.feeQuote(urls, net)]);
+    // a plain send's gas, as the send itself will reckon it (Arbitrum's includes its Ethereum data cost), and Base's
+    // fee for its room on Ethereum
+    const dest = to && E.isEthAddress(to) ? E.checkAddress(to) : from;
+    const gas = net === MAINNET ? 21_000n : (BigInt(await E.ethRpc(urls, 'eth_estimateGas', [{ from, to: dest, value: '0x0', data: '0x' }])) * 125n) / 100n;
+    const l1 = net.l1Fee ? ((await E.l1Fee(urls, { nonce: 0n, maxPriorityFeePerGas: fees.tip, maxFeePerGas: fees.maxFee, gas, to: from, value: wei, data: '0x' }, net)) ?? L1_FEE_GUESS) * 2n : 0n;
+    const left = wei - gas * fees.maxFee - l1;
     return formatUnits(left > 0n ? left : 0n, 18);
   }
   if (chain === 'btc') {
@@ -1242,7 +1289,8 @@ async function submitPrepared({ id }) {
   let out;
   if (p.chain === 'eth') {
     const hash = await signAndSendEth(p.from, p.tx);
-    out = { signature: hash, chain: 'eth', explorer: E.explorerTx(hash) };
+    const net = networkById(p.tx.chainId ?? MAINNET.id) ?? MAINNET;
+    out = { signature: hash, chain: 'eth', net: net.key, explorer: E.explorerTx(hash, net), explorerName: net.explorerName };
   } else if (p.chain === 'btc') {
     const { raw, txid } = await B.signSpend(p.plan, p.owner, (address, digests) => W.signBitcoinAs(address, digests));
     await B.broadcast(raw, txid);
@@ -1298,15 +1346,7 @@ async function getQuote({ inputMint, outputMint, amount, slippageBps }) {
  */
 async function balances({ chain = 'sol' } = {}) {
   const { wallet, address } = await requireActive(chain);
-  if (chain === 'eth') {
-    const s = await getSettings();
-    const [{ wei, tokens }, price] = await Promise.all([E.balances(await ethUrls(), address, { hideZero: s.hideZero }), priceOf('eth')]);
-    return {
-      chain, address,
-      native: { amount: wei.toString(), decimals: 18, symbol: 'ETH', name: 'ethereum', price: price.price, usd: price.price == null ? null : (Number(wei) / 1e18) * price.price, change24h: price.change24h },
-      tokens: tokens.sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1)),
-    };
-  }
+  if (chain === 'eth') return evmBalances(address);
   if (chain === 'btc') {
     // both addresses' coins: bc1q and bc1p
     const [bal, price] = await Promise.all([B.balanceOf(ownerOf(wallet)), priceOf('btc')]);
@@ -1317,6 +1357,38 @@ async function balances({ chain = 'sol' } = {}) {
     };
   }
   return solBalances(address);
+}
+
+/**
+ * An address on every Ethereum network: Ethereum's own ETH as `native`, the other networks' coins in `networks` (each
+ * { net, title, tag, symbol, amount, price, usd, change24h, error }), and every network's tokens together, each marked
+ * with its network (`net`). Ethereum failing fails the read; another network failing is noted in its own entry.
+ */
+async function evmBalances(address) {
+  const s = await getSettings();
+  const [prices, ...per] = await Promise.all([
+    Promise.all([priceOf('eth'), priceOf('pol')]),
+    ...EVM_NETWORKS.map(async (net) => {
+      try { return { net, ...(await E.balances(await ethUrls(net), address, { hideZero: s.hideZero, net })) }; } catch (e) {
+        if (net === MAINNET) throw e;
+        return { net, error: e.message };
+      }
+    }),
+  ]);
+  const coin = ({ net, wei = null, error = null, tokensRead = false }) => {
+    const p = net.native.price === 'pol' ? prices[1] : prices[0];
+    return {
+      net: net.key, title: net.title, tag: net.tag, symbol: net.native.symbol, name: net.native.name, decimals: 18, amount: wei == null ? null : wei.toString(),
+      price: p.price, usd: p.price == null || wei == null ? null : (Number(wei) / 1e18) * p.price, change24h: p.change24h, error, tokensRead,
+    };
+  };
+  const [main, ...others] = per.map(coin);
+  return {
+    chain: 'eth', address,
+    native: { amount: main.amount, decimals: 18, symbol: 'ETH', name: 'ethereum', price: main.price, usd: main.usd, change24h: main.change24h },
+    networks: others,
+    tokens: per.flatMap((r) => r.tokens ?? []).sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1)),
+  };
 }
 
 async function solBalances(address) {
@@ -1360,6 +1432,20 @@ async function solBalances(address) {
   };
 }
 
+/** Recent transactions on every Ethereum network, each marked with its network. A network that can't be read is noted
+ * in `errors`; Ethereum's own failing fails the chain. */
+async function evmActivity(address, errors) {
+  const per = await Promise.all(EVM_NETWORKS.map(async (net) => {
+    try { return (await E.activity(address, 25, net)).map((x) => ({ ...x, chain: 'eth', net: net.key, tag: net.tag })); } catch (e) {
+      if (net === MAINNET) throw e;
+      return `${net.name}: ${e.message}`;
+    }
+  }));
+  const failed = per.filter((x) => typeof x === 'string');
+  if (failed.length) errors.eth = failed.join(' · ');
+  return per.filter(Array.isArray).flat();
+}
+
 /** The active wallet's recent transactions on every chain it has, newest first: { items, errors }. */
 async function activity() {
   const w = await W.activeWallet();
@@ -1367,7 +1453,7 @@ async function activity() {
   const errors = {};
   const per = await Promise.all(Object.entries(w.chains).map(async ([chain, { address }]) => {
     try {
-      if (chain === 'eth') return (await E.activity(address)).map((x) => ({ ...x, chain }));
+      if (chain === 'eth') return await evmActivity(address, errors);
       if (chain === 'btc') return (await B.activityOf(ownerOf(w))).map((x) => ({ ...x, chain }));
       const { rpc, network } = await net();
       const list = await rpc.signatures(address, 25);
@@ -1380,7 +1466,8 @@ async function activity() {
   // what plum sent that the indexers haven't seen yet
   const items = per.flat();
   for (const [id, s] of sent) {
-    if (s.chain !== 'sol' && w.chains[s.chain] && s.status === 'sent' && !items.some((x) => x.id === id)) items.push({ chain: s.chain, id, time: Math.floor(s.at / 1000), ok: true, pending: true, explorer: s.chain === 'eth' ? E.explorerTx(id) : B.explorerTx(id) });
+    const net = s.chain === 'eth' ? networkByKey(s.net) ?? MAINNET : null;
+    if (s.chain !== 'sol' && w.chains[s.chain] && s.status === 'sent' && !items.some((x) => x.id === id)) items.push({ chain: s.chain, id, time: Math.floor(s.at / 1000), ok: true, pending: true, explorer: net ? E.explorerTx(id, net) : B.explorerTx(id), ...(net ? { net: net.key, tag: net.tag } : {}) });
   }
   items.sort((a, b) => (b.pending - a.pending) || ((b.time ?? 0) - (a.time ?? 0)));
   return { items: items.slice(0, 40), errors };
@@ -1388,28 +1475,29 @@ async function activity() {
 
 /* ------------------------------------------------------------ what a recovery phrase holds (the import picker) */
 
-/** Has an address been used? Solana: SOL on it or any history; Ethereum: ETH on it or a sent transaction; Bitcoin: any
- * transaction. Each answers { used, amount } (amount in the chain's smallest unit), or { used: null } if it couldn't
- * be checked. */
+/** Has an address been used? Solana: SOL on it or any history; Ethereum: a coin on it or a sent transaction, on any of
+ * plum's Ethereum networks (the amount is Ethereum's own ETH); Bitcoin: any transaction. Each answers { used, amount }
+ * (amount in the chain's smallest unit), or { used: null } if it couldn't be checked. */
 async function usage(found) {
   const { rpc } = await net('mainnet');
-  const urls = await ethUrls();
   const sol = found.map((f) => f.chains.sol?.address).filter(Boolean);
   const solInfo = new Map();
   try {
     const infos = await rpc.accounts(sol);
     sol.forEach((a, i) => solInfo.set(a, BigInt(infos[i]?.lamports ?? 0)));
   } catch { /* offline: unknown */ }
-  // Ethereum: every balance and nonce in one batched request
+  // Ethereum: every balance and nonce in one batched request per network
   const eth = found.map((f) => f.chains.eth?.address).filter(Boolean);
-  const ethInfo = eth.length ? await E.usageOf(urls, eth).catch(() => new Map()) : new Map();
+  const ethInfos = eth.length ? await Promise.all(EVM_NETWORKS.map(async (n) => E.usageOf(await ethUrls(n), eth).catch(() => new Map()))) : [];
   // then each wallet's Solana history (only where it holds no SOL) and Bitcoin, its chains side by side
   const out = await pool(found, 6, async (f) => {
     const res = {};
     const e = f.chains.eth?.address;
     if (e) {
-      const x = ethInfo.get(e);
-      res.eth = x ? { used: x.wei > 0n || x.nonce > 0n, amount: x.wei.toString() } : { used: null, amount: '0' };
+      const all = ethInfos.map((m) => m.get(e));
+      const used = all.some((x) => x && (x.wei > 0n || x.nonce > 0n));
+      // unused only when every network answered; one that didn't leaves it unknown
+      res.eth = { used: used || (all.every(Boolean) ? false : null), amount: (all[0]?.wei ?? 0n).toString() };
     }
     await Promise.all([
       (async () => {
@@ -1476,8 +1564,19 @@ async function state() {
       const custom = url !== v.url;
       return [k, { label: v.label, url: !custom && v.builtIn ? "plum's built in rpc" : url, custom, builtIn: !custom && !!v.builtIn }];
     })),
+    // the Ethereum networks, and your own RPC for each if you set one
+    evm: EVM_NETWORKS.map((n) => ({ key: n.key, id: n.id, name: n.name, title: n.title, tag: n.tag, symbol: n.native.symbol, explorerName: n.explorerName, rpc: (n === MAINNET ? s.ethRpc : s.evmRpc?.[n.key]) || '' })),
     pending: pending.size,
   };
+}
+
+/** A custom RPC for an Ethereum network must answer, and be on that network: an RPC for another chain would show
+ * balances and simulations from the wrong place. */
+async function checkEvmRpc(url, n) {
+  let id;
+  try { id = await E.ethRpc([url], 'eth_chainId', [], { timeout: 10_000 }); } catch (e) { throw fail(`plum couldn't ask that RPC which chain it is on (${e.message})`); }
+  const got = networkById(id);
+  if (got !== n) throw fail(`that RPC is for ${got ? got.title : `chain ${String(id).slice(0, 20)}`}, not ${n.title} (chain ${n.id})`);
 }
 
 async function updateSettings(patch) {
@@ -1494,6 +1593,18 @@ async function updateSettings(patch) {
     next.rpc = rpc;
   }
   if ('ethRpc' in p) next.ethRpc = p.ethRpc ? checkRpcUrl(String(p.ethRpc).trim()) : '';
+  if ('evmRpc' in p) {
+    // one per Ethereum network (Ethereum's own is ethRpc), each checked to be on its network before it's kept
+    const cur = { ...((await getSettings()).evmRpc ?? {}) };
+    for (const [k, v] of Object.entries(p.evmRpc && typeof p.evmRpc === 'object' ? p.evmRpc : {})) {
+      const n = networkByKey(k);
+      if (!n) continue;
+      const url = v ? checkRpcUrl(String(v).trim()) : '';
+      if (url) await checkEvmRpc(url, n);
+      if (n === MAINNET) next.ethRpc = url; else cur[k] = url;
+    }
+    next.evmRpc = cur;
+  }
   if ('autolockMin' in p) { if (!AUTOLOCK_CHOICES.includes(p.autolockMin)) throw fail('pick one of the auto-lock times'); next.autolockMin = p.autolockMin; }
   if ('hideZero' in p) next.hideZero = !!p.hideZero;
   if ('jupiterKey' in p) next.jupiterKey = String(p.jupiterKey ?? '').trim().slice(0, 128);
@@ -1552,7 +1663,7 @@ const ui = {
   'wallet.export': ({ id, chain, password }) => W.exportKey(id, chain, String(password ?? '')),
   'password.change': ({ oldPassword, newPassword }) => serial(async () => { await W.changePassword(String(oldPassword ?? ''), String(newPassword ?? '')); return true; }),
   'settings.set': ({ patch }) => serial(() => updateSettings(patch)),
-  sites: async () => Object.entries(await sites()).map(([origin, v]) => ({ origin, ...v })).sort((a, b) => b.lastUsed - a.lastUsed),
+  sites: async () => (await Promise.all(Object.entries(await sites()).map(async ([origin, v]) => ({ origin, ...v, evmNet: v.evm?.length ? (await siteNetwork(origin)).tag : null })))).sort((a, b) => b.lastUsed - a.lastUsed),
   'sites.revoke': async ({ origin }) => { await revoke(String(origin)); return true; },
   balances,
   activity,

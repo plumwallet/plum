@@ -1,23 +1,25 @@
-// Ethereum (mainnet only): transactions (EIP-1559), signed messages (EIP-191) and typed data (EIP-712) written from
-// bytes here, with nothing but keccak and secp256k1; balances, tokens and history read from public RPCs and Blockscout.
-// Like the Solana side, nothing a provider or a site says is trusted: amounts are read back from what plum builds, and
-// a transaction's sender is recovered from its own signature before it goes out.
+// Ethereum and the networks built on it (evm-chains.js): transactions (EIP-1559), signed messages (EIP-191) and typed
+// data (EIP-712) written from bytes here, with nothing but keccak and secp256k1; balances, tokens and history read from
+// each network's public RPCs and Blockscout. Like the Solana side, nothing a provider or a site says is trusted:
+// amounts are read back from what plum builds, and a transaction's sender is recovered from its own signature before
+// it goes out. Functions that read a network take it last and default to Ethereum's own.
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { concat, hex, utf8 } from '../shared/bytes.js';
 import { cleanLine, hasHidden } from '../shared/text.js';
+import { MAINNET, networkById } from './evm-chains.js';
 import { checksumEth, ethAddressOfPublicKey } from './keys.js';
 import { NetError, failover, getJson, pool, request } from './net.js';
 
-export const CHAIN_ID = 1;
+export const CHAIN_ID = MAINNET.id;
 export const CHAIN_HEX = '0x1';
 /** Public RPCs with CORS, batching and eth_simulateV1, tried in turn. */
-export const PUBLIC_RPCS = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://1rpc.io/eth'];
-/** Sends go to MEV Blocker first: a private route to block builders, so nobody sees a transaction early and trades
- * in front of it; then the public ones. The same signed bytes everywhere, so a second send can't double-spend. */
-const SEND_RPCS = ['https://rpc.mevblocker.io', ...PUBLIC_RPCS];
-const BLOCKSCOUT = 'https://eth.blockscout.com/api/v2';
-export const EXPLORER = 'https://etherscan.io';
+export const PUBLIC_RPCS = MAINNET.rpcs;
+/** Sends on Ethereum go to MEV Blocker first: a private route to block builders, so nobody sees a transaction early
+ * and trades in front of it; then the public ones. The same signed bytes everywhere, so a second send can't
+ * double-spend. */
+const SEND_RPCS = [...MAINNET.private, ...PUBLIC_RPCS];
+export const EXPLORER = MAINNET.explorer;
 /** Where eth_simulateV1's traced ETH transfers come from (they're logged as if this address were a token). */
 const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
@@ -94,11 +96,11 @@ export function rlp(item) {
 }
 
 /**
- * An EIP-1559 transaction on mainnet: { nonce, maxPriorityFeePerGas, maxFeePerGas, gas, to, value, data } (numbers as
- * bigints, `to` a 0x address, `data` 0x hex).
+ * An EIP-1559 transaction: { chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gas, to, value, data } (numbers as
+ * bigints, `to` a 0x address, `data` 0x hex). Without a chainId it is for Ethereum (chain 1).
  */
 function txFields(tx) {
-  return [intBytes(CHAIN_ID), intBytes(tx.nonce), intBytes(tx.maxPriorityFeePerGas), intBytes(tx.maxFeePerGas), intBytes(tx.gas),
+  return [intBytes(tx.chainId ?? CHAIN_ID), intBytes(tx.nonce), intBytes(tx.maxPriorityFeePerGas), intBytes(tx.maxFeePerGas), intBytes(tx.gas),
     tx.to ? fromHex(tx.to) : new Uint8Array(0), intBytes(tx.value ?? 0n), fromHex(tx.data ?? '0x'), []];
 }
 export const unsignedTx = (tx) => concat(Uint8Array.of(2), rlp(txFields(tx)));
@@ -256,13 +258,17 @@ export function typedLines(td, max = 300) {
   return { lines, more, cut };
 }
 
-/** What typed data would let someone do: dangers named in words. */
-export function typedWarnings(td, { owner }) {
+/** What typed data would let someone do: dangers named in words. `chainId` is the network the site is on. */
+export function typedWarnings(td, { owner, chainId = CHAIN_ID }) {
   const w = [];
   const d = td.domain ?? {};
   const m = td.message ?? {};
   const chain = d.chainId != null ? (() => { try { return intValue(d.chainId, 256, false); } catch { return null; } })() : null;
-  if (chain != null && chain !== 1n) w.push({ level: 'danger', text: `this is made for another chain (id ${chain}), not Ethereum: a site asking you to sign for one chain while you're on another is a classic trick` });
+  if (chain != null && chain !== BigInt(chainId)) {
+    const here = networkById(chainId)?.title ?? `chain ${chainId}`;
+    const there = networkById(chain)?.title;
+    w.push({ level: 'danger', text: `this is made for ${there ? `${there} (chain ${chain})` : `another chain (id ${chain})`}, not ${here}: a site asking you to sign for one chain while you're on another is a classic trick` });
+  }
   const who = (a) => (typeof a === 'string' ? a : '?');
   const name = cleanLine(String(d.name ?? 'a token'), 40);
   const p = td.primaryType;
@@ -362,18 +368,36 @@ export async function usageOf(urls, addresses) {
 }
 
 /** The fee to offer now: { base, tip, maxFee } in wei per gas. The tip is what recent blocks paid (their median),
- * kept between 0.01 and 3 gwei; the cap is twice the base fee plus the tip, so a few full blocks can't strand it. */
-export async function feeQuote(urls) {
+ * kept within the network's bounds (0.01 to 3 gwei on Ethereum); the cap is twice the base fee plus the tip, so a few
+ * full blocks can't strand it. */
+export async function feeQuote(urls, net = MAINNET) {
   const [block, history] = await Promise.all([
     ethRpc(urls, 'eth_getBlockByNumber', ['latest', false]),
     ethRpc(urls, 'eth_feeHistory', ['0x5', 'latest', [50]]).catch(() => null),
   ]);
   const base = big(block?.baseFeePerGas ?? 0);
   const tips = (history?.reward ?? []).map((r) => { try { return big(r[0]); } catch { return null; } }).filter((x) => x != null).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  let tip = tips.length ? tips[Math.floor(tips.length / 2)] : 1_000_000_000n;
-  if (tip < 10_000_000n) tip = 10_000_000n;
-  if (tip > 3_000_000_000n) tip = 3_000_000_000n;
+  let tip = tips.length ? tips[Math.floor(tips.length / 2)] : net.tip.fallback;
+  if (tip < net.tip.min) tip = net.tip.min;
+  if (tip > net.tip.max) tip = net.tip.max;
   return { base, tip, maxFee: base * 2n + tip };
+}
+
+const GAS_ORACLE = '0x420000000000000000000000000000000000000F';
+
+/** What an OP Stack network (Base) charges a transaction for its room on Ethereum, on top of gas: its GasPriceOracle's
+ * getL1Fee over the unsigned transaction. 0 on networks without one; null when the oracle doesn't answer. */
+export async function l1Fee(urls, tx, net = MAINNET) {
+  if (!net.l1Fee) return 0n;
+  const bytes = unsignedTx({ ...tx, chainId: net.id });
+  const padded = Math.ceil(bytes.length / 32) * 32;
+  const body = new Uint8Array(padded);
+  body.set(bytes);
+  const data = `0x49948e0e${hex(word(32n))}${hex(word(BigInt(bytes.length)))}${hex(body)}`;
+  try {
+    const r = await ethRpc(urls, 'eth_call', [{ to: GAS_ORACLE, data }, 'latest']);
+    return BigInt(r && r !== '0x' ? r.slice(0, 66) : '0x0');
+  } catch { return null; }
 }
 
 /** A token's decimals, from the token contract itself. */
@@ -385,25 +409,28 @@ export async function tokenDecimals(urls, token) {
 }
 
 /** Name and ticker from Blockscout (shown as text, cleaned of hidden characters); nulls if it doesn't know. */
-export async function tokenMeta(token) {
+export async function tokenMeta(token, net = MAINNET) {
   try {
-    const t = await getJson(`${BLOCKSCOUT}/tokens/${token}`, { timeout: 10_000 });
+    const t = await getJson(`${net.blockscout}/tokens/${token}`, { timeout: 10_000 });
     return { symbol: cleanLine(String(t?.symbol ?? ''), 16) || null, name: cleanLine(String(t?.name ?? ''), 48) || null, price: Number(t?.exchange_rate) || null };
   } catch { return { symbol: null, name: null, price: null }; }
 }
 
-/** ETH and ERC-20 tokens an address holds. Tokens come from Blockscout: a token without a market price is shown as
- * unverified (anyone can call a token "USDC"), and ones Blockscout marks as scams are left out. */
-export async function balances(urls, address, { hideZero = true } = {}) {
+/** The network's coin and the ERC-20 tokens an address holds there. Tokens come from Blockscout: a token without a
+ * market price is shown as unverified (anyone can call a token "USDC"), and ones Blockscout marks as scams are left
+ * out. `tokensRead` is false when Blockscout didn't answer (the coin's balance, from the RPC, is still known). */
+export async function balances(urls, address, { hideZero = true, net = MAINNET } = {}) {
+  let tokensRead = true;
   const [wei, list] = await Promise.all([
     ethRpc(urls, 'eth_getBalance', [address, 'latest']).then(big),
-    getJson(`${BLOCKSCOUT}/addresses/${address}/token-balances`, { timeout: 15_000 }).catch(() => []),
+    getJson(`${net.blockscout}/addresses/${address}/token-balances`, { timeout: 15_000 }).catch(() => { tokensRead = false; return []; }),
   ]);
   const tokens = [];
   for (const it of Array.isArray(list) ? list : []) {
     const t = it?.token;
     if (!t || t.type !== 'ERC-20' || typeof t.address_hash !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(t.address_hash)) continue;
     if (t.reputation === 'scam') continue;
+    if (net.nativeToken && sameAddress(t.address_hash, net.nativeToken)) continue;
     let raw;
     try { raw = BigInt(it.value); } catch { continue; }
     if (hideZero && raw === 0n) continue;
@@ -412,19 +439,19 @@ export async function balances(urls, address, { hideZero = true } = {}) {
     const price = Number(t.exchange_rate);
     const known = Number.isFinite(price) && price > 0;
     tokens.push({
-      chain: 'eth', mint: checksumEth(t.address_hash), amount: raw.toString(), decimals,
+      chain: 'eth', net: net.key, mint: checksumEth(t.address_hash), amount: raw.toString(), decimals,
       symbol: cleanLine(String(t.symbol ?? ''), 16) || null, name: cleanLine(String(t.name ?? ''), 48) || null,
       verified: known, price: known ? price : null, usd: known ? (Number(raw) / 10 ** decimals) * price : null, change24h: null,
     });
   }
-  return { wei, tokens };
+  return { wei, tokens, tokensRead };
 }
 
-/** Recent transactions of an address (its own and the tokens it got), newest first. */
-export async function activity(address, limit = 25) {
+/** Recent transactions of an address on a network (its own and the tokens it got), newest first. */
+export async function activity(address, limit = 25, net = MAINNET) {
   const [txs, tts] = await Promise.all([
-    getJson(`${BLOCKSCOUT}/addresses/${address}/transactions`, { timeout: 15_000 }),
-    getJson(`${BLOCKSCOUT}/addresses/${address}/token-transfers?type=ERC-20`, { timeout: 15_000 }).catch(() => ({ items: [] })),
+    getJson(`${net.blockscout}/addresses/${address}/transactions`, { timeout: 15_000 }),
+    getJson(`${net.blockscout}/addresses/${address}/token-transfers?type=ERC-20`, { timeout: 15_000 }).catch(() => ({ items: [] })),
   ]);
   const seen = new Map();
   for (const t of txs?.items ?? []) {
@@ -437,7 +464,7 @@ export async function activity(address, limit = 25) {
     seen.set(h, { id: h, time: Math.floor(Date.parse(t.timestamp) / 1000) || null, ok: true, pending: false });
   }
   return [...seen.values()].sort((a, b) => (b.time ?? Infinity) - (a.time ?? Infinity)).slice(0, limit)
-    .map((x) => ({ ...x, explorer: `${EXPLORER}/tx/${x.id}` }));
+    .map((x) => ({ ...x, explorer: `${net.explorer}/tx/${x.id}` }));
 }
 
 /** Send signed bytes; returns the transaction hash. "Already known" from a second RPC means the first one took it. */
@@ -461,7 +488,7 @@ export async function txStatus(urls, hash) {
 }
 
 /** The explorer page for a transaction. */
-export const explorerTx = (hash) => `${EXPLORER}/tx/${hash}`;
+export const explorerTx = (hash, net = MAINNET) => `${net.explorer}/tx/${hash}`;
 
 /**
  * What a transaction does to `owner`, by running it on the latest block (eth_simulateV1 with transfers traced): ETH and
@@ -469,12 +496,29 @@ export const explorerTx = (hash) => `${EXPLORER}/tx/${hash}`;
  * approvals: [{ token, spender, all }], gasUsed } or null when no RPC can simulate.
  */
 export async function simulate(urls, owner, call) {
-  const tx = { from: owner, to: call.to ?? undefined, value: qty(call.value ?? 0n), data: call.data ?? '0x' };
-  if (call.gas) tx.gas = qty(call.gas);
-  // the fee it will really carry, on a block with the real base fee: a contract can't tell the simulation from the real
-  // thing by tx.gasprice or block.basefee being 0
-  if (call.fees) Object.assign(tx, { maxFeePerGas: qty(call.fees.maxFee), maxPriorityFeePerGas: qty(call.fees.tip) });
-  const block = { calls: [tx], ...(call.fees ? { blockOverrides: { baseFeePerGas: qty(call.fees.base) } } : {}) };
+  const res = await simulateCalls(urls, owner, [call], { fees: call.fees });
+  if (!res) return null;
+  if (!res.calls.length) return { ok: false, error: res.error, gasUsed: null, changes: [], approvals: [] };
+  const { changes, approvals, native, gasUsed, ok, error } = res.calls[0];
+  return { ok, error, gasUsed, changes, approvals, native };
+}
+
+/**
+ * Calls run one after another in one block on the latest state, each seeing what the ones before it changed (an
+ * approval, then the swap that spends it): { ok (all succeeded), error (the first failure), calls: [{ ok, error,
+ * gasUsed, changes, approvals, native }], changes (all of them together) } or null when no RPC can simulate. `fees`
+ * are the fees they will carry, on a block with that base fee.
+ */
+export async function simulateCalls(urls, owner, calls, { fees = null } = {}) {
+  const txs = calls.map((call) => {
+    const tx = { from: owner, to: call.to ?? undefined, value: qty(call.value ?? 0n), data: call.data ?? '0x' };
+    if (call.gas) tx.gas = qty(call.gas);
+    // the fee it will really carry, on a block with the real base fee: a contract can't tell the simulation from the
+    // real thing by tx.gasprice or block.basefee being 0
+    if (fees) Object.assign(tx, { maxFeePerGas: qty(fees.maxFee), maxPriorityFeePerGas: qty(fees.tip) });
+    return tx;
+  });
+  const block = { calls: txs, ...(fees ? { blockOverrides: { baseFeePerGas: qty(fees.base) } } : {}) };
   let res;
   try {
     res = await ethRpc(urls, 'eth_simulateV1', [{ blockStateCalls: [block], traceTransfers: true, validation: false }, 'latest'], { timeout: 20_000 });
@@ -482,14 +526,28 @@ export async function simulate(urls, owner, call) {
     // no RPC answered, or none can simulate: not known
     if (!e.final || /not found|not supported|does not exist|unknown method/i.test(e.message)) return null;
     // the chain itself turned it down (not enough ETH for it, say): that's the answer, it would fail
-    return { ok: false, error: cleanLine(String(e.message || 'it fails'), 160), gasUsed: null, changes: [], approvals: [] };
+    return { ok: false, error: cleanLine(String(e.message || 'it fails'), 160), calls: [], changes: [] };
   }
-  const c = res?.[0]?.calls?.[0];
-  if (!c) return null;
+  const got = res?.[0]?.calls;
+  if (!Array.isArray(got) || got.length !== calls.length) return null;
+  const me = owner.toLowerCase();
+  const out = got.map((c) => readCall(c, me));
+  const total = new Map();
+  for (const c of out) for (const { token, delta } of c.changes) total.set(token, (total.get(token) ?? 0n) + delta);
+  const failed = out.find((c) => !c.ok);
+  return {
+    ok: !failed,
+    error: failed?.error ?? null,
+    calls: out,
+    changes: [...total].filter(([, v]) => v !== 0n).map(([token, delta]) => ({ token, delta })),
+  };
+}
+
+/** One simulated call's logs, read for `me`: what moved in and out, and the approvals given. */
+function readCall(c, me) {
   const ok = c.status === '0x1';
   const deltas = new Map();
   const approvals = [];
-  const me = owner.toLowerCase();
   let native = false; // did the RPC trace ETH at all?
   const add = (token, v) => deltas.set(token, (deltas.get(token) ?? 0n) + v);
   for (const log of c.logs ?? []) {
@@ -562,10 +620,10 @@ function batchOf(data) {
 }
 
 /** Names and decimals for the tokens a preview touches (Blockscout, then the contract), for showing amounts. */
-export async function describeTokens(urls, tokens) {
+export async function describeTokens(urls, tokens, net = MAINNET) {
   const out = new Map();
   await pool([...new Set(tokens)], 4, async (t) => {
-    const meta = await tokenMeta(t);
+    const meta = await tokenMeta(t, net);
     let decimals = null;
     try { decimals = await tokenDecimals(urls, t); } catch { /* an NFT, or not a token */ }
     out.set(t, { ...meta, decimals });

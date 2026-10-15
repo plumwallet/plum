@@ -26,6 +26,8 @@ export const DEFAULT_SETTINGS = {
   rpc: { mainnet: '', devnet: '', testnet: '', localnet: '' },
   /** your own Ethereum RPC, or '' for plum's public ones */
   ethRpc: '',
+  /** the same for the other Ethereum networks, by key */
+  evmRpc: { base: '', arbitrum: '', polygon: '' },
   autolockMin: 15,
   hideZero: true,
   jupiterKey: '',
