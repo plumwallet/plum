@@ -27,7 +27,11 @@ export function fakeNet() {
     utxos: new Map(), // address -> [{ txid, vout, value, confirmed }]
     fees: { fastestFee: 20, halfHourFee: 10, hourFee: 5, economyFee: 2, minimumFee: 1 },
     broadcast: [], // raw hex
+    txs: new Map(), // txid -> [{ scriptpubkey (hex), value }]: the outputs /tx/<txid> answers with
   };
+  // ordinals.com's recursive endpoints: 'txid:vout' -> { inscriptions: [id], runes: { NAME: { amount, divisibility } } },
+  // inscription id -> satpoint; `down` makes it answer 503
+  const ord = { utxos: new Map(), satpoints: new Map(), down: false, calls: [] };
   const blockscout = { tokens: new Map() }; // owner (lowercase) -> token-balances items
   const reply = (body, status = 200) => ({ ok: status < 400, status, text: async () => (typeof body === 'string' ? body : JSON.stringify(body)), json: async () => body });
 
@@ -92,6 +96,7 @@ export function fakeNet() {
       }
       if ((m = /^\/address\/([^/]+)\/txs$/.exec(path))) return reply([]);
       if ((m = /^\/tx\/([0-9a-f]{64})\/status$/.exec(path))) return reply({ confirmed: true });
+      if ((m = /^\/tx\/([0-9a-f]{64})$/.exec(path))) return btc.txs.has(m[1]) ? reply({ txid: m[1], vout: btc.txs.get(m[1]) }) : reply('Transaction not found', 404);
       return reply({ message: 'not found' }, 404);
     }
     if (u.host === 'eth.blockscout.com') {
@@ -106,8 +111,16 @@ export function fakeNet() {
       return reply({ message: 'not found' }, 404);
     }
     if (u.host === 'api.coingecko.com') return reply({ bitcoin: { usd: 80000, usd_24h_change: -1 }, ethereum: { usd: 2500, usd_24h_change: 2 } });
+    if (u.host === 'ordinals.com') {
+      ord.calls.push(u.pathname);
+      if (ord.down) return reply('down', 503);
+      let m;
+      if ((m = /^\/r\/utxo\/([0-9a-f]{64}:\d+)$/.exec(u.pathname))) return ord.utxos.has(m[1]) ? reply({ inscriptions: [], runes: {}, sat_ranges: null, value: 0, ...ord.utxos.get(m[1]) }) : reply('not found', 404);
+      if ((m = /^\/r\/inscription\/([0-9a-f]{64}i\d+)$/.exec(u.pathname))) return ord.satpoints.has(m[1]) ? reply({ id: m[1], satpoint: ord.satpoints.get(m[1]) }) : reply('not found', 404);
+      return reply('not found', 404);
+    }
     throw new Error('no network in tests');
   }
 
-  return { eth, btc, blockscout, fetch: fetchFake };
+  return { eth, btc, ord, blockscout, fetch: fetchFake };
 }

@@ -80,7 +80,8 @@ export function buildPsbt({ inputs, outputs, version = 2, locktime = 0 }) {
   for (const o of outputs) psbt.addOutput(o.address ? { address: o.address, value: o.value } : { script: o.script, value: o.value });
   const b64 = psbt.toBase64();
   const bytes = Uint8Array.from(Buffer.from(b64, 'base64'));
-  return { psbt, b64, bytes, decoded: decodePsbt(bytes), chain };
+  // read when asked for: a PSBT built to be refused doesn't read
+  return { psbt, b64, bytes, get decoded() { return decodePsbt(bytes); }, chain };
 }
 
 /** A previous transaction paying `script` `value` at output `vout` (for non-witness UTXOs): { txid, raw }. */

@@ -129,6 +129,7 @@ function messageView(bytes, extra) {
 export function bitcoinSites({ approval, trusted, trust, untrust, riskOf, openWelcome, track, version }) {
   async function request(origin, method, params, ctx) {
     const p = params && typeof params === 'object' && !Array.isArray(params) ? params : {};
+    if (!METHODS.includes(method)) throw err(`Plum doesn't support ${String(method).slice(0, 40)}`, CODES.METHOD_NOT_FOUND);
     if (method === 'getInfo') return { version, methods: METHODS, supports: [] };
     if (method === 'wallet_getNetwork') return NETWORK;
     if (method === 'wallet_getWalletType') return 'software';
