@@ -237,6 +237,11 @@ export function typedDigest(td) {
   return keccak_256(concat(Uint8Array.of(0x19, 0x01), domainSeparator, hashStruct(td.primaryType, td.message, td.types)));
 }
 
+/** The two hashes typedDigest joins: the domain separator and the message's struct hash (null for a bare domain). */
+export function typedHashes(td) {
+  return { domain: hashStruct('EIP712Domain', td.domain, td.types), message: td.primaryType === 'EIP712Domain' ? null : hashStruct(td.primaryType, td.message, td.types) };
+}
+
 /** Typed data as lines to read, depth-first: { lines: [{ path, value }] (at most `max`), more: how many didn't fit,
  * cut: how many shown values are shorter than what's signed (cut at 120 characters, or with hidden characters taken
  * out) }. Nothing that is signed goes unshown without being counted in `more` or `cut`. */
