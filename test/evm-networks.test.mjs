@@ -211,7 +211,8 @@ test('the most you can send on Base leaves its fee and its room on Ethereum', as
   const base = net.evm.base;
   base.balances.set(lower(ETH_ME), 10n ** 16n);
   const max = await ok('send.max', { chain: 'eth', net: 'base', token: null });
-  const gas = 21_000n * 125n / 100n;
+  // the send's own gas and a tenth more, at the most the fee can be, and twice the room on Ethereum
+  const gas = 21_000n * 125n * 11n / 1000n;
   assert.equal(max, E.units(10n ** 16n - gas * (2n * base.baseFee + base.tip) - 2n * base.l1Fee, 18));
   const prep = await ok('send.prepare', { chain: 'eth', net: 'base', to: TO, amount: max });
   assert.equal(prep.amount, max);

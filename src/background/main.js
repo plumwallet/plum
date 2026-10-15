@@ -1172,10 +1172,10 @@ async function maxSend({ chain = 'sol', token = null, to = null, speed = 'normal
     const urls = await ethUrls(net);
     if (token) { const t = E.checkAddress(token); return formatUnits(await erc20Balance(urls, t, from), await E.tokenDecimals(urls, t)); }
     const [wei, fees] = await Promise.all([E.ethRpc(urls, 'eth_getBalance', [from, 'latest']).then(BigInt), E.feeQuote(urls, net)]);
-    // a plain send's gas, as the send itself will reckon it (Arbitrum's includes its Ethereum data cost), and Base's
-    // fee for its room on Ethereum
+    // a plain send's gas, as the send itself will reckon it (Arbitrum's includes its Ethereum data cost) and a tenth
+    // more (its estimate there may differ a little with the value), and Base's fee for its room on Ethereum
     const dest = to && E.isEthAddress(to) ? E.checkAddress(to) : from;
-    const gas = net === MAINNET ? 21_000n : (BigInt(await E.ethRpc(urls, 'eth_estimateGas', [{ from, to: dest, value: '0x0', data: '0x' }])) * 125n) / 100n;
+    const gas = net === MAINNET ? 21_000n : (BigInt(await E.ethRpc(urls, 'eth_estimateGas', [{ from, to: dest, value: '0x0', data: '0x' }])) * 125n * 11n) / 1000n;
     const l1 = net.l1Fee ? ((await E.l1Fee(urls, { nonce: 0n, maxPriorityFeePerGas: fees.tip, maxFeePerGas: fees.maxFee, gas, to: from, value: wei, data: '0x' }, net)) ?? L1_FEE_GUESS) * 2n : 0n;
     const left = wei - gas * fees.maxFee - l1;
     return formatUnits(left > 0n ? left : 0n, 18);
