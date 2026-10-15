@@ -339,6 +339,8 @@ function review(prep, { kind, back }) {
   const err = errLine();
   // a Ledger signs it after this: its state, live, while plum waits on it
   const device = isLedgerWallet(active()) ? deviceBox(APP[prep.chain ?? 'sol'], { hidden: true }) : null;
+  // coins from both Bitcoin addresses: two passes on the device, each warning of the other address's coins
+  const both = prep.chain === 'btc' && prep.preview?.taproot > 0 && prep.preview.taproot < prep.preview.inputs;
   busyButton(next, async () => {
     err.hidden = true;
     device?.watch();
@@ -354,7 +356,7 @@ function review(prep, { kind, back }) {
     : box('swapping', { tone: 'ink' }, kv('you pay', `${prep.inAmount} ${prep.inSymbol}`), kv('you get (about)', `${prep.outAmount} ${prep.outSymbol}`), kv('at least', `${prep.minOut} ${prep.outSymbol}`));
   show(...screen('review', null, summary,
     previewBlock(prep.preview, { extra: prep.warnings }),
-    device ? h('p', { class: 'fine' }, prep.chain === 'btc' ? 'your Ledger shows this send too: sign it there after this. It also lists the change coming back to this wallet, as a second output to its own address.' : 'your Ledger shows this too: approve it there after this.') : null,
+    device ? h('p', { class: 'fine' }, prep.chain === 'btc' ? `your Ledger shows this send too: sign it there after this. It also lists the change coming back to this wallet, as a second output to its own address.${both ? " This spends coins from both your addresses, so the Ledger asks twice, once for each, and each time warns of external inputs: those are this wallet's own coins at its other address." : ''}` : 'your Ledger shows this too: approve it there after this.') : null,
     device?.node, dangers ? ack : null, err, actions(back, next)));
 }
 

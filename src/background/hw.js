@@ -383,7 +383,7 @@ export async function approvalNote(r) {
     evmTx: "after you approve it here, your Ledger shows the transaction. If it calls a contract, the Ethereum app asks for blind signing to be on in its settings.",
     evmMessage: 'after you approve it here, your Ledger shows the message: sign it there too.',
     evmTyped: "your Ledger shows every field when its Ethereum app has raw messages (or blind signing) turned on in its settings; otherwise it shows the two hashes below. Check them against these.",
-    btcSend: 'after you approve it here, your Ledger shows every output and the fee: sign it there too, then plum sends it.',
+    btcSend: "after you approve it here, your Ledger shows every output and the fee: sign it there too, then plum sends it. If it spends coins from both your addresses, the Ledger asks twice, once for each, and each time warns of external inputs: those are this wallet's own coins at its other address.",
     btcMessage: 'after you approve it here, your Ledger shows the message: sign it there too (in the legacy format, the one a Ledger signs).',
   };
   const out = { app, note: notes[r.kind] ?? null };
