@@ -14,7 +14,8 @@
 import { formatUnits, parseUnits, short } from '../shared/format.js';
 import { cleanLine } from '../shared/text.js';
 import * as E from './eth.js';
-import { MAINNET, networkByKey } from './evm-chains.js';
+import { networkByKey } from './evm-chains.js';
+import { allowance, approveData, sendSteps, tokenBalance } from './evm-steps.js';
 import { NetError, request } from './net.js';
 import { priceOf } from './prices.js';
 
@@ -143,23 +144,11 @@ export function swapProblem(tx, { me, sell, buy, amount, floor }) {
   return null;
 }
 
-/* ------------------------------------------------------------ approvals */
-
-const ALLOWANCE = 'dd62ed3e';
-const pad = (a) => a.slice(2).toLowerCase().padStart(64, '0');
-const amountWord = (n) => n.toString(16).padStart(64, '0');
-/** approve(spender, amount) for a token: plum's own, for an exact amount. */
-export const approveData = (spender, amount) => `0x095ea7b3${pad(spender)}${amountWord(amount)}`;
-
-async function allowance(urls, token, owner, spender) {
-  const r = await E.ethRpc(urls, 'eth_call', [{ to: token, data: `0x${ALLOWANCE}${pad(owner)}${pad(spender)}` }, 'latest']);
-  return BigInt(r && r !== '0x' ? r.slice(0, 66) : '0x0');
-}
+/* ------------------------------------------------------------ balances */
 
 async function balanceOf(urls, token, owner) {
   if (isNative(token)) return BigInt(await E.ethRpc(urls, 'eth_getBalance', [owner, 'latest']));
-  const r = await E.ethRpc(urls, 'eth_call', [{ to: token, data: `0x70a08231${pad(owner)}` }, 'latest']);
-  return BigInt(r && r !== '0x' ? r.slice(0, 66) : '0x0');
+  return tokenBalance(urls, token, owner);
 }
 
 /* ------------------------------------------------------------ quotes */
@@ -247,12 +236,16 @@ export function simProblem(sim, { sell, buy, amount, floor }) {
   // the coin's moves are only seen when the RPC traces them: none at all, when the coin is bought or sold, means plum
   // can't see what you'd get (nothing arrives, or the RPC doesn't trace), so it won't send it
   if ((sellKey == null || buyKey == null) && !sim.calls.some((c) => c.native)) return "the simulation shows none of the network's coin moving, so plum can't see what you'd get: it won't send this swap";
-  for (const c of sim.calls) {
+  for (const [i, c] of sim.calls.entries()) {
+    const inSwap = i === sim.calls.length - 1;
     for (const a of c.approvals) {
       if (a.nft != null && a.out) return 'the swap would also take an NFT from you';
       if (a.nft != null) continue;
       if (a.all || a.item != null || a.permit2) return `the swap would also let ${a.spender} take tokens of yours`;
-      if (!E.sameAddress(a.spender, ROUTER) || key(a.token) !== sellKey || a.amount > amount) return `the swap would also let ${a.spender} spend tokens of yours`;
+      if (!E.sameAddress(a.spender, ROUTER) || key(a.token) !== sellKey) return `the swap would also let ${a.spender} spend tokens of yours`;
+      // plum's own approval is for the amount at most; inside the swap, the router's allowance can only go down (only
+      // you can raise it, and plum carries no permit), so what's left of one you gave before is fine
+      if (!inSwap && a.amount > amount) return `the swap would let ${a.spender} spend more than you sell`;
     }
   }
   let got = 0n, sold = 0n;
@@ -333,7 +326,7 @@ export async function prepare({ quoteId }, { me, urls }) {
   const changes = sim.changes.map((ch) => {
     const t = which(ch.token);
     return t
-      ? { symbol: t.symbol, decimals: t.decimals, delta: ch.delta.toString(), verified: t === q.sell || t.known || !!t.verified }
+      ? { symbol: t.symbol, decimals: t.decimals, delta: ch.delta.toString(), verified: !t.mint || t === q.sell || t.known || !!t.verified }
       : { symbol: ch.token ? short(ch.token, 6) : coin, decimals: ch.token ? 0 : 18, delta: ch.delta.toString(), verified: !ch.token };
   }).sort((x, y) => (BigInt(x.delta) < 0n ? -1 : 0) - (BigInt(y.delta) < 0n ? -1 : 0));
   sweep(prepared, PREPARED_TTL);
@@ -358,47 +351,21 @@ export async function prepare({ quoteId }, { me, urls }) {
 
 /* ------------------------------------------------------------ sending */
 
-/** How long to wait for an approval to land before the swap goes. */
-const LAND_MS = { ethereum: 180_000, base: 60_000, arbitrum: 60_000, polygon: 90_000 };
-
 /**
  * Sign and send a prepared swap: its approval first (when it has one), and once that has landed, the swap, after one
- * more simulation that must pass the same checks. Each is signed by your wallet alone. { signature, approvals, ... }
+ * more simulation that must pass the same checks (evm-steps.js). Each is signed by your wallet alone.
+ * { signature, approvals, ... }
  */
-export async function submit({ id, ignoreRisk = false }, { me, urls, signAndSend, status, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+export async function submit({ id, ignoreRisk = false }, deps) {
   const p = prepared.get(id);
   if (!p) throw fail('that swap expired: review it again');
   // a danger on the review (a price far under the market's) needs your "i understand" here too
   if (p.danger && ignoreRisk !== true) throw fail('this swap carries a danger: tick "i understand" to swap anyway');
   prepared.delete(id);
   if (Date.now() - p.at > PREPARED_TTL) throw fail('that took too long (the price and fee may have moved): get a new quote');
-  if (!E.sameAddress(p.me, me)) throw fail('the wallet changed: get a new quote');
+  if (!E.sameAddress(p.me, deps.me)) throw fail('the wallet changed: get a new quote');
   const net = networkByKey(p.net);
-  const u = await urls(net);
-  const [nonceHex, fees] = await Promise.all([E.ethRpc(u, 'eth_getTransactionCount', [me, 'pending']), E.feeQuote(u, net)]);
-  // the fee cap you reviewed is the one signed, while the network still agrees with it
-  if (fees.base > p.fees.maxFee) throw fail('the network fee has risen past what you reviewed: get a new quote');
-  let nonce = BigInt(nonceHex);
-  const tx = (c) => ({ chainId: net.id, nonce: nonce++, maxPriorityFeePerGas: p.fees.tip, maxFeePerGas: p.fees.maxFee, gas: c.gas, to: c.to, value: c.value, data: c.data });
-  const approvals = [];
-  for (const c of p.calls.filter((x) => x.kind !== 'swap')) approvals.push(await signAndSend(me, tx(c)));
-  if (approvals.length) {
-    const until = Date.now() + LAND_MS[net.key];
-    let st;
-    for (;;) {
-      st = await status(approvals.at(-1), net).catch(() => 'pending');
-      if (st !== 'pending' || Date.now() >= until) break;
-      await sleep(net === MAINNET ? 4000 : 1500);
-    }
-    if (st === 'failed') throw fail(`the approval failed on ${net.title}, so the swap wasn't sent`);
-    if (st !== 'confirmed') throw fail(`the approval hasn't landed on ${net.title} yet, so the swap wasn't sent: get a new quote in a minute (it won't need another approval)`);
-  }
-  // the swap, simulated once more on the latest block (with the approval in place now) before it is signed
-  const swap = p.calls.find((x) => x.kind === 'swap');
-  const sim = await E.simulateCalls(u, me, [swap], { fees: p.fees });
-  const bad = simProblem(sim, p.ctx);
-  if (bad) throw fail(`${approvals.length ? 'the approval landed, but ' : ''}${bad}`);
-  const hash = await signAndSend(me, tx(swap));
+  const { hash, approvals } = await sendSteps(net, p, deps, (sim) => { const bad = simProblem(sim, p.ctx); if (bad) throw fail(bad); });
   return { signature: hash, approvals, chain: 'eth', net: net.key, explorer: E.explorerTx(hash, net), explorerName: net.explorerName };
 }
 

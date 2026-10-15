@@ -307,6 +307,23 @@ test('withstood: plum never gives an unlimited approval, and asks for none when 
   usdc.allowances.clear();
 });
 
+test('an allowance you gave the router before: what is left of it, shown going down inside the swap, is fine; the same for anyone else is refused', async () => {
+  reset();
+  const usdc = base.tokens.get(lower(USDC));
+  usdc.allowances.set(`${lower(ETH_ME)}:${lower(ROUTER)}`, (1n << 256n) - 1n);
+  try {
+    // a token that logs Approval(you, spender, what's left) when it's spent (OpenZeppelin 4 does)
+    swapSim = (call) => okCall([...honestSwap(call).logs, log(USDC, APPROVAL, call.from, ROUTER, (1n << 256n) - 1n - IN)]);
+    let q = await quote();
+    const prep = await ok('evm.swap.prepare', { quoteId: q.id });
+    assert.deepEqual(prep.steps, ['swap']);
+    assert.ok(prep.warnings.some((w) => /can already spend all of your USDC/.test(w.text)), 'the old allowance is named');
+    swapSim = (call) => okCall([...honestSwap(call).logs, log(USDC, APPROVAL, call.from, ATTACKER, 5n)]);
+    q = await quote();
+    assert.match(await err('evm.swap.prepare', { quoteId: q.id }), /let 0x000000000000000000000000000000000000dEaD spend/);
+  } finally { usdc.allowances.clear(); }
+});
+
 test('withstood: checked again right before the swap is sent: a swap that would now fail is not sent (the approval stays exact)', async () => {
   reset();
   const q = await quote();
@@ -331,7 +348,7 @@ test('withstood: an approval that fails on chain stops the swap; so does a fee r
   base.receipts.has = () => true;
   base.receipts.get = () => '0x0';
   try {
-    assert.match(await err('evm.swap.submit', { id: prep.id }), /the approval failed on Base, so the swap wasn't sent/);
+    assert.match(await err('evm.swap.submit', { id: prep.id }), /the approval failed on Base, so nothing else was sent/);
     assert.equal(base.sent.length, before + 1);
   } finally { base.receipts = real; void orig; }
   q = await quote();
