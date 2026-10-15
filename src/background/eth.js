@@ -26,6 +26,11 @@ const APPROVAL_ALL_TOPIC = '0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489
 /** Permit2's own Approval(owner, token, spender, amount, expiration): spending rights inside Permit2, over tokens most
  * wallets already approved to it without limit. */
 const PERMIT2_APPROVAL_TOPIC = '0xda9fa7c1b00402c17d0161b249b1ab8bbec047c5a52207b9c112deffd817036b';
+/** ERC-1155 TransferSingle(operator, from, to, id, value) and TransferBatch(operator, from, to, ids, values). */
+const TRANSFER_SINGLE_TOPIC = '0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62';
+const TRANSFER_BATCH_TOPIC = '0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb';
+/** The most of a TransferBatch's items a preview names one by one. */
+const MAX_BATCH = 50;
 const MAX_UINT = (1n << 256n) - 1n;
 
 const fail = (message, code) => Object.assign(new Error(message), code ? { code } : {});
@@ -285,6 +290,7 @@ const SELECTORS = {
   '39509351': { name: 'increaseAllowance', args: ['address', 'uint256'] },
   a22cb465: { name: 'setApprovalForAll', args: ['address', 'bool'] },
   '42842e0e': { name: 'safeTransferFrom', args: ['address', 'address', 'uint256'] },
+  f242432a: { name: 'safeTransferFrom (ERC-1155)', args: ['address', 'address', 'uint256', 'uint256'] },
   '87517c45': { name: 'approve (Permit2)', args: ['address', 'address', 'uint160', 'uint48'] },
   d0e30db0: { name: 'deposit', args: [] },
   '2e1a7d4d': { name: 'withdraw', args: ['uint256'] },
@@ -500,6 +506,14 @@ export async function simulate(urls, owner, call) {
       // an NFT (ERC-721): its id is the third topic
       if (addrAt(1) === me) approvals.push({ token, nft: BigInt(topics[3]).toString(), out: true });
       if (addrAt(2) === me) approvals.push({ token, nft: BigInt(topics[3]).toString(), out: false });
+    } else if ((topics[0] === TRANSFER_SINGLE_TOPIC || topics[0] === TRANSFER_BATCH_TOPIC) && topics.length === 4 && (addrAt(2) === me || addrAt(3) === me)) {
+      // an ERC-1155 item (or a batch of them) moving: ids and amounts are in the data
+      let moved;
+      try { moved = topics[0] === TRANSFER_SINGLE_TOPIC ? [[wordAt(log.data, 0), wordAt(log.data, 1)]] : batchOf(log.data); } catch { continue; }
+      for (const [id, amount] of moved.slice(0, MAX_BATCH)) {
+        if (addrAt(2) === me) approvals.push({ token, nft: id.toString(), amount: amount.toString(), out: true });
+        if (addrAt(3) === me) approvals.push({ token, nft: id.toString(), amount: amount.toString(), out: false });
+      }
     } else if (topics[0] === APPROVAL_TOPIC && addrAt(1) === me && topics.length === 3) {
       let v;
       try { v = BigInt(log.data && log.data !== '0x' ? log.data : '0x0'); } catch { v = 0n; }
@@ -525,6 +539,26 @@ export async function simulate(urls, owner, call) {
     approvals,
     native,
   };
+}
+
+/** The `i`th 32-byte word of a log's 0x data, as a number. */
+function wordAt(data, i) {
+  const h = String(data ?? '0x').slice(2 + 64 * i, 2 + 64 * (i + 1));
+  if (h.length !== 64) throw fail('the log is too short');
+  return BigInt(`0x${h}`);
+}
+
+/** A TransferBatch's (id, amount) pairs: two dynamic uint256 arrays of the same length. */
+function batchOf(data) {
+  const array = (head) => {
+    const at = Number(wordAt(data, head)) / 32;
+    const n = Number(wordAt(data, at));
+    if (!Number.isInteger(at) || n > 10_000) throw fail('the log is malformed');
+    return Array.from({ length: n }, (_, k) => wordAt(data, at + 1 + k));
+  };
+  const ids = array(0), amounts = array(1);
+  if (ids.length !== amounts.length) throw fail('the log is malformed');
+  return ids.map((id, k) => [id, amounts[k]]);
 }
 
 /** Names and decimals for the tokens a preview touches (Blockscout, then the contract), for showing amounts. */

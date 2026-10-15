@@ -13,8 +13,8 @@ import { formatUnits, parseUnits, short } from '../shared/format.js';
 import { associatedTokenAddress, isOnCurve } from '../shared/pda.js';
 import { hasHidden } from '../shared/text.js';
 import {
-  MAX_V1_TX_BYTES, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, WSOL_MINT, compileLegacy, isSigned, isTransactionShaped, ix, maxTxBytes, readTx, signersOf,
-  startsLikeTransaction, unsignedTx, withSignature,
+  MAX_TX_BYTES, MAX_V1_TX_BYTES, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, WSOL_MINT, compileLegacy, compileV1, isSigned, isTransactionShaped, ix, maxTxBytes, readTx,
+  signersOf, startsLikeTransaction, unsignedTx, withSignature,
 } from '../shared/tx.js';
 import * as B from './btc.js';
 import * as E from './eth.js';
@@ -25,6 +25,7 @@ import { previewTx } from './preview.js';
 import { priceOf } from './prices.js';
 import { NETWORKS, checkRpcUrl, client, explorerUrl, networkOfChain } from './rpc.js';
 import { quote as jupQuote, searchTokens, swapTransaction, tokenInfo } from './jupiter.js';
+import * as N from './nfts.js';
 import * as S from './stake.js';
 import { AUTOLOCK_CHOICES, getSettings, local, session, setSettings } from './store.js';
 import * as W from './wallet.js';
@@ -776,7 +777,7 @@ async function evmPreview(owner, call) {
     else if (a.unlimited) warnings.push({ level: 'danger', text: `it lets ${a.spender} spend all of your ${label(a.token)}, now and later, without asking you again.` });
     else warnings.push({ level: 'warn', text: `it lets ${a.spender} spend some of your ${label(a.token)} without asking you again.` });
   }
-  for (const a of sim?.approvals ?? []) if (a.nft != null) warnings.push({ level: a.out ? 'warn' : 'info', text: `${a.out ? 'an NFT leaves' : 'an NFT comes into'} your wallet: #${a.nft.slice(0, 20)} of ${label(a.token)}` });
+  for (const a of sim?.approvals ?? []) if (a.nft != null) warnings.push({ level: a.out ? 'warn' : 'info', text: `${a.out ? 'an NFT leaves' : 'an NFT comes into'} your wallet: ${a.amount && a.amount !== '1' ? `${a.amount.slice(0, 20)} of ` : ''}#${a.nft.slice(0, 20)} of ${label(a.token)}` });
   // what the call itself says, whenever the simulation showed no approval (none ran, or the approval came in a shape
   // its reader doesn't know)
   if (decoded?.name && !(sim?.approvals ?? []).some((a) => a.nft == null)) {
@@ -916,12 +917,18 @@ async function priorityPrice(rpc, writable) {
   }
 }
 
-/** Build a legacy transaction for `payer`, measure it, and set its compute limit to what it uses. */
+/** Build a legacy transaction for `payer` (a v1 one when it won't fit legacy's 1232 bytes), measure it, and set its
+ * compute limit to what it uses. */
 async function buildOwn(rpc, payer, instructions) {
   const price = await priorityPrice(rpc, [...new Set(instructions.flatMap((i) => i.keys.filter((k) => k.isWritable).map((k) => k.pubkey)))]);
-  const make = (units, blockhash) => unsignedTx(compileLegacy({ payer, blockhash, instructions: [ix.unitLimit(units), ix.unitPrice(price), ...instructions] }));
+  const legacy = (units, blockhash) => unsignedTx(compileLegacy({ payer, blockhash, instructions: [ix.unitLimit(units), ix.unitPrice(price), ...instructions] }));
+  // v1 carries its budget in its header, the priority fee as whole lamports
+  const v1 = (units, blockhash) => unsignedTx(compileV1({ payer, blockhash, instructions, config: { computeUnitLimit: units, priorityFee: (BigInt(units) * price + 999_999n) / 1_000_000n, loadedAccountsDataSizeLimit: 64 * 1024 * 1024 } }));
   let { blockhash } = await rpc.latestBlockhash();
-  const trial = await rpc.simulate(b64encode(make(200_000, blockhash)));
+  const make = legacy(200_000, blockhash).length > MAX_TX_BYTES ? v1 : legacy;
+  let trial = await rpc.simulate(b64encode(make(200_000, blockhash)));
+  // a heavier one (a programmable NFT's transfer) is measured again with all the room there is
+  if (/ComputationalBudgetExceeded|exceeded CUs/.test(`${JSON.stringify(trial.err ?? '')}\n${(trial.logs ?? []).join('\n')}`)) trial = await rpc.simulate(b64encode(make(1_400_000, blockhash)));
   const units = trial.err || !trial.unitsConsumed ? 200_000 : Math.ceil(trial.unitsConsumed * 1.2) + 300;
   ({ blockhash } = await rpc.latestBlockhash());
   const bytes = make(units, blockhash);
@@ -1167,6 +1174,51 @@ async function prepareStaking(params) {
   const preview = await previewTx(bytes, { owner: me, rpc, meta: namer(network) });
   const id = keep({ chain: 'sol', bytes, network, account: me, kind: 'stake' });
   return { id, chain: 'sol', preview, warnings, summary, network };
+}
+
+/** Your NFTs on one chain (nfts.js reads them): names and ids only. */
+async function nftList({ chain = 'sol' } = {}) {
+  if (chain === 'eth') {
+    const { address } = await requireActive('eth');
+    return { chain, items: await N.listEth(address) };
+  }
+  const { address } = await requireActive('sol');
+  const { rpc, network } = await net();
+  return { chain: 'sol', network, ...(await N.listSol(rpc, address)) };
+}
+
+/** Sending an NFT: on Solana the transfer its standard takes (nfts.js plans it), built and previewed like a send; on
+ * Ethereum safeTransferFrom, simulated like a site's transaction, after the contract says it's yours. */
+async function prepareNftSend(params) {
+  if (params?.chain === 'eth') return prepareEthNftSend(params);
+  const { address: me } = await requireActive('sol');
+  const { rpc, network } = await net();
+  const { instructions, summary, warnings } = await N.planSolSend(rpc, me, params);
+  const bytes = await buildOwn(rpc, me, instructions);
+  const preview = await previewTx(bytes, { owner: me, rpc, meta: namer(network) });
+  const id = keep({ chain: 'sol', bytes, network, account: me, kind: 'nft', recipient: summary.to });
+  return { id, chain: 'sol', preview, warnings: [...(await recipientChecks('sol', summary.to, me)), ...warnings], summary, network };
+}
+
+async function prepareEthNftSend({ contract, id, standard, amount = '1', to }) {
+  const { address: from } = await requireActive('eth');
+  const urls = await ethUrls();
+  const token = E.checkAddress(String(contract ?? ''));
+  const dest = E.checkAddress(String(to ?? ''));
+  if (standard !== 'erc721' && standard !== 'erc1155') throw fail('pick an NFT');
+  if (E.sameAddress(dest, from)) throw fail("that's the wallet it's in already");
+  if (E.sameAddress(dest, token)) throw fail("that's the NFT's own contract: an NFT sent there is lost");
+  let tokenId, count;
+  try { tokenId = BigInt(id); count = BigInt(amount); } catch { throw fail('pick an NFT'); }
+  if (tokenId < 0n || count <= 0n) throw fail('pick an NFT');
+  if (!(await N.ethHolds(urls, { contract: token, id: tokenId, standard, owner: from, amount: count }))) throw fail("this NFT isn't in this wallet any more");
+  const call = { to: token, value: 0n, data: standard === 'erc721' ? N.erc721TransferData(from, dest, tokenId) : N.erc1155TransferData(from, dest, tokenId, count), gas: null };
+  const { signWith, ...preview } = await evmPreview(from, call);
+  if (!signWith) throw fail("plum couldn't work out this transfer's gas and fee: try again");
+  const nonce = BigInt(await E.ethRpc(urls, 'eth_getTransactionCount', [from, 'pending']));
+  const tx = { nonce, maxPriorityFeePerGas: signWith.fees.tip, maxFeePerGas: signWith.fees.maxFee, gas: signWith.gas, to: call.to, value: 0n, data: call.data };
+  const prep = keep({ chain: 'eth', tx, from, recipient: dest });
+  return { id: prep, chain: 'eth', preview, warnings: await recipientChecks('eth', dest, from), summary: { standard, id: tokenId.toString(), contract: token, amount: count.toString(), to: dest } };
 }
 
 async function submitPrepared({ id }) {
@@ -1500,6 +1552,9 @@ const ui = {
   'stake.validators': async () => { const { rpc, network } = await net(); return S.validators(rpc, network); },
   'stake.prepare': prepareStaking,
   'stake.submit': submitPrepared,
+  'nfts.list': nftList,
+  'nfts.prepare': prepareNftSend,
+  'nfts.submit': submitPrepared,
   'tx.status': ({ signature }) => sent.get(signature) ?? null,
   'tokens.search': async ({ query }) => searchTokens(query, await jupOpts()),
   'approval.get': approvalView,

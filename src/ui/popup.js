@@ -13,6 +13,7 @@ import { backupLater, welcome } from './flows.js';
 import { CHAIN, actions, addressBlock, box, chainsOf, coinMark, iconArt, kv, previewBlock, rule, secretField, seg, spinner } from './parts.js';
 import { qrAscii } from './qr.js';
 import './scrollbar.js';
+import { nftsScreen } from './nfts.js';
 import { stakeScreen } from './stake.js';
 
 const WSOL = 'So11111111111111111111111111111111111111112';
@@ -118,7 +119,7 @@ function home() {
     rule(),
     bal,
     rule(),
-    h('nav', { class: 'acts' }, act('send', () => sendScreen()), act('receive', () => receiveScreen()), act('swap', () => swapScreen()), act('stake', () => stakeScreen()), act('history', () => historyScreen())));
+    h('nav', { class: 'acts' }, act('send', () => sendScreen()), act('receive', () => receiveScreen()), act('swap', () => swapScreen()), act('stake', () => stakeScreen()), act('nfts', () => nftsScreen()), act('history', () => historyScreen())));
   const waiting = ctx.S.pending
     ? h('div', { class: 'note hot' }, `${ctx.S.pending === 1 ? 'a site is' : `${ctx.S.pending} requests are`} waiting for your answer `,
       h('button', { class: 'mini', type: 'button', onclick: async () => { await call('approval.show'); window.close(); } }, 'open it'))
@@ -586,7 +587,7 @@ async function settingsScreen(stay = false) {
 
 Object.assign(go, {
   home, accounts: () => accountsScreen(), settings: () => settingsScreen(), send: sendScreen, receive: receiveScreen, swap: swapScreen,
-  history: historyScreen, welcome, unlock, sent: sentScreen, stake: stakeScreen,
+  history: historyScreen, welcome, unlock, sent: sentScreen, stake: stakeScreen, nfts: nftsScreen,
 });
 
 async function boot() {

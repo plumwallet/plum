@@ -9,6 +9,7 @@ import { after, afterEach, before, beforeEach, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Buckets, METHODS, addressKey, clientOf, makeProxy, readCall, secretsOf, upstreamOf } from '../proxy/rpc-proxy.mjs';
 import { NETWORKS, PLUM_RPC, client, transport } from '../src/background/rpc.js';
+import * as nfts from '../src/background/nfts.js';
 import * as stake from '../src/background/stake.js';
 import { fakeBrowser } from './fake-browser.mjs';
 
@@ -43,6 +44,10 @@ const RESULTS = {
   getStakeMinimumDelegation: { context: { slot: 1 }, value: 1_000_000_000 },
   getMinimumBalanceForRentExemption: 1_666_240,
   getInflationReward: [null],
+  getAssetsByOwner: { total: 0, limit: 1000, page: 1, items: [] },
+  getAsset: null,
+  getAssetBatch: [],
+  getAssetProof: null,
 };
 const ok = (call) => ({ status: 200, body: { jsonrpc: '2.0', id: call.id, result: RESULTS[call.method] ?? null } });
 let answer = ok; // how the stand-in answers: (call, req, res) => { status, body, type } or 'done' when it answered itself
@@ -197,6 +202,53 @@ test("staking's calls go through, exactly as stake.js makes them", async () => {
   for (const m of ['getEpochInfo', 'getProgramAccounts', 'getStakeMinimumDelegation', 'getMinimumBalanceForRentExemption', 'getVoteAccounts', 'getBlockProduction', 'getMultipleAccounts']) assert.ok(methods.includes(m), m);
   // both stake lookups (by withdrawer, by staker) and the validator names, nothing refused on the way
   assert.equal(methods.filter((m) => m === 'getProgramAccounts').length, 3);
+});
+
+test("NFTs' calls (the RPC's DAS methods, named params) go through, exactly as nfts.js makes them", async () => {
+  const p = await start();
+  const original = transport.post;
+  transport.post = async (url, body) => {
+    const r = await raw(url, { headers: { 'content-type': 'application/json', origin: EXT }, body: JSON.stringify(body) });
+    return { status: r.status, json: r.json };
+  };
+  try {
+    const rpc = client(p.url);
+    assert.deepEqual(await nfts.listSol(rpc, A), { items: [], via: 'das' });
+    assert.deepEqual(await nfts.namesOf(rpc, [B, A]), new Map());
+    // a Metaplex NFT by its mint when DAS knows nothing of it: planSolSend asks for the asset first
+    await assert.rejects(nfts.planSolSend(rpc, A, { id: B, to: SIG.slice(0, 44) }), /can't send this kind|isn't a Solana address/);
+  } finally {
+    transport.post = original;
+  }
+  const calls = seen.map((s) => s.call);
+  assert.deepEqual(calls.find((c) => c.method === 'getAssetsByOwner').params, { ownerAddress: A, page: 1, limit: 1000, displayOptions: { showCollectionMetadata: true } });
+  assert.deepEqual(calls.find((c) => c.method === 'getAssetBatch').params, { ids: [B, A], displayOptions: { showCollectionMetadata: true } });
+});
+
+test('DAS calls in any other shape are turned down', async () => {
+  const p = await start();
+  for (const [method, params] of [
+    ['getAssetsByOwner', { ownerAddress: A, page: 1, limit: 1001 }],
+    ['getAssetsByOwner', { ownerAddress: A, page: 51, limit: 10 }],
+    ['getAssetsByOwner', { ownerAddress: A, page: 1, limit: 10, sortBy: { sortBy: 'created' } }],
+    ['getAssetsByOwner', { ownerAddress: A, page: 1, limit: 10, displayOptions: { showCollectionMetadata: 'yes' } }],
+    ['getAssetsByOwner', { ownerAddress: A, page: 1, limit: 10, displayOptions: { showInscription: true } }],
+    ['getAssetsByOwner', [A]],
+    ['getAssetsByOwner', { ownerAddress: 'nope', page: 1, limit: 10 }],
+    ['getAsset', { id: A, extra: 1 }],
+    ['getAsset', [A]],
+    ['getAssetBatch', { ids: Array(101).fill(A) }],
+    ['getAssetBatch', { ids: [] }],
+    ['getAssetProof', { id: A, displayOptions: {} }],
+    ['getAssetsByGroup', { groupKey: 'collection', groupValue: A, page: 1, limit: 10 }],
+    ['searchAssets', { ownerAddress: A }],
+  ]) {
+    const r = await post(p, rpcCall(method, params));
+    assert.equal(r.status, 400, `${method} ${JSON.stringify(params).slice(0, 60)}`);
+    assert.ok([-32601, -32602].includes(r.json.error.code));
+  }
+  assert.equal(seen.length, 0);
+  assert.equal((await post(p, rpcCall('getAssetsByOwner', { ownerAddress: A, page: 2, limit: 1000, displayOptions: { showCollectionMetadata: true } }))).status, 200);
 });
 
 /* ------------------------------------------------------------ who gets in */

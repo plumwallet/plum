@@ -10,6 +10,7 @@ import { base58Decode, base58Encode } from '../shared/base58.js';
 import { b64decode, b64encode, readU32, readU64 } from '../shared/bytes.js';
 import { short, prettyAmount } from '../shared/format.js';
 import { programName } from '../shared/programs.js';
+import { nftNotes, readCoreAsset } from './nfts.js';
 import {
   SIGNATURE_FEE, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, WSOL_MINT, budgetInstructions, computeBudgetOf, feeOf, isSigned, isStaticWritable, readTx, signersOf,
 } from '../shared/tx.js';
@@ -280,8 +281,9 @@ export async function previewTx(input, { owner, rpc, meta }) {
         w.add('warn', `it lets ${short(b.closeAuthority)} close your token account ${short(addr)}`);
       }
       // any other account that named you (a stake, a mint, an NFT, a nonce, a program's upgrade authority...) and no
-      // longer does after this transaction, while it still exists: you've been taken off it
-      if (addr !== owner && !(a || b)) {
+      // longer does after this transaction, while it still exists: you've been taken off it (a Core asset changing hands
+      // is named by nftNotes instead)
+      if (addr !== owner && !(a || b) && !readCoreAsset(preMap.get(addr))) {
         const before = dataOf(preMap.get(addr));
         const after = dataOf(postMap.get(addr));
         const prog = postMap.get(addr)?.owner ?? preMap.get(addr)?.owner;
@@ -334,9 +336,12 @@ export async function previewTx(input, { owner, rpc, meta }) {
       if (e.type === 9) w.add('info', `${label} can't be transferred once it's yours`);
     }
   }
+  // NFTs, by name: each one that leaves you is said in words, whatever its standard
+  const nft = await nftNotes({ t, all, programOf, owner, ok, preMap, postMap, deltas, decimals, rpc }).catch(() => ({ notes: [], labels: new Map() }));
+  for (const n of nft.notes) w.add(n.level, n.text, n.key);
   const tokens = mints.map((mint) => {
     const n = names.get(mint) ?? {};
-    return { mint, delta: deltas.get(mint).toString(), decimals: decimals.get(mint) ?? 0, symbol: n.symbol ?? null, name: n.name ?? null, icon: n.icon ?? null, verified: !!n.verified };
+    return { mint, delta: deltas.get(mint).toString(), decimals: decimals.get(mint) ?? 0, symbol: n.symbol ?? null, name: n.name ?? null, icon: n.icon ?? null, verified: !!n.verified, nft: nft.labels.get(mint) ?? null };
   });
 
   const order = { danger: 0, warn: 1, info: 2 };

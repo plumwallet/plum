@@ -302,8 +302,8 @@ function solPreviewBlock(p, { extra = [], index = null, count = 1 } = {}) {
   const sol = BigInt(p.sol);
   if (sol !== 0n) changes.push(deltaLine(sol, 9, 'SOL'));
   for (const t of p.tokens) {
-    // an unverified token is named by its address too: anyone can call a token "USDC"
-    const label = t.symbol && t.verified ? t.symbol : t.symbol ? `${t.symbol} (${short(t.mint)})` : short(t.mint);
+    // an unverified token is named by its address too: anyone can call a token "USDC"; an NFT by its name and address
+    const label = t.nft?.name ? `${t.nft.name} (${short(t.mint)})` : t.symbol && t.verified ? t.symbol : t.symbol ? `${t.symbol} (${short(t.mint)})` : short(t.mint);
     changes.push(h('div', { class: 'chg-row' }, deltaLine(t.delta, t.decimals, label), t.symbol && !t.verified ? chip('unverified', 'hot') : null));
   }
   const nothing = p.sim.ok && !changes.length;

@@ -73,11 +73,21 @@ const programLookup = ([program, q]) => q.encoding === 'base64' && Array.isArray
   ? q.filters.length === 2 && only(['dataSize'])(q.filters[0]) && q.filters[0].dataSize === 200 && memcmp([12, 44], address)(q.filters[1])
   : program === CONFIG_PROGRAM && q.filters.length === 1 && memcmp([1], (b) => b === VALIDATOR_INFO)(q.filters[0]));
 
+// The RPC's DAS methods (NFTs): their params are named, not listed, and only the ones plum sends get through
+const bool = (v) => v === true || v === false;
+const display = (v) => v === undefined || (only(['showCollectionMetadata', 'showUnverifiedCollections', 'showFungible'])(v) && Object.values(v).every(bool));
+const named = (check) => ({ named: check });
+
 /**
  * Every method the wallet calls (src/background), each with its params in order (and `whole`, a check of them
- * together, where one param decides what another may be). Nothing else.
+ * together, where one param decides what another may be), or for the DAS methods, `named`: a check of its object of
+ * params. Nothing else.
  */
 export const METHODS = {
+  getAsset: named((p) => only(['id', 'displayOptions'])(p) && address(p.id) && display(p.displayOptions)),
+  getAssetBatch: named((p) => only(['ids', 'displayOptions'])(p) && addresses(1, 100)(p.ids) && display(p.displayOptions)),
+  getAssetProof: named((p) => only(['id'])(p) && address(p.id)),
+  getAssetsByOwner: named((p) => only(['ownerAddress', 'page', 'limit', 'displayOptions'])(p) && address(p.ownerAddress) && integer(1, 50)(p.page) && integer(1, 1000)(p.limit) && display(p.displayOptions)),
   getAccountInfo: [need(address), may(config)],
   getBalance: [need(address), may(config)],
   getBlockHeight: [may(config)],
@@ -116,11 +126,10 @@ export function readCall(text) {
   if (!(id === null || Number.isSafeInteger(id) || (typeof id === 'string' && id.length <= 64))) throw new Refusal(400, -32600, 'the id must be a whole number or a short string', { why: 'json' });
   const shape = Object.hasOwn(METHODS, call.method) ? METHODS[call.method] : null;
   if (!shape) throw new Refusal(400, -32601, "plum's rpc doesn't answer that method", { why: 'method', id });
-  const params = call.params ?? [];
-  if (!Array.isArray(params) || params.length > shape.length || shape.some((p, i) => (params[i] === undefined ? p.required : !p.check(params[i])))
-    || (shape.whole && !shape.whole(params))) {
-    throw new Refusal(400, -32602, `those aren't params plum sends with ${call.method}`, { why: 'params', id });
-  }
+  const params = call.params ?? (shape.named ? {} : []);
+  const fits = shape.named ? isObject(params) && shape.named(params)
+    : Array.isArray(params) && params.length <= shape.length && !shape.some((p, i) => (params[i] === undefined ? p.required : !p.check(params[i]))) && (!shape.whole || shape.whole(params));
+  if (!fits) throw new Refusal(400, -32602, `those aren't params plum sends with ${call.method}`, { why: 'params', id });
   return { id, method: call.method, params };
 }
 

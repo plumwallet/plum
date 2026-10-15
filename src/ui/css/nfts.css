@@ -1,0 +1,17 @@
+/* NFTs: typed cards, two to a row, each its collection (quiet), its name and its id, at the text's one size. A card
+ * never holds a picture. */
+.nft-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 1ch; }
+.nft-card {
+  display: grid; min-width: 0; padding: 2px 1ch; text-align: left; cursor: pointer; background: none; color: var(--ink);
+  font: 400 1em/20px var(--mono); transition: background var(--ease);
+  border-style: solid; border-color: transparent; border-image-repeat: round; border-width: 0.769em 0.6em; border-image-slice: 76.923 60 76.923 60; border-image-source: var(--frh-soft);
+}
+.nft-card > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nft-col { color: var(--soft); }
+.nft-col.unv { color: var(--hot); }
+.nft-name { font-weight: 700; color: var(--ink); transition: color var(--ease); }
+.nft-id { color: var(--mute); }
+.nft-card:hover, .nft-card:focus-visible { border-image-source: var(--frh-green); background: var(--hi); outline: none; }
+.nft-card:hover .nft-name, .nft-card:focus-visible .nft-name { color: var(--go); }
+.nft-status { line-height: 20px; }
+.nft-title { line-height: 20px; overflow-wrap: anywhere; }

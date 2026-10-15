@@ -1,0 +1,428 @@
+{
+ "das": {
+  "programmable": {
+   "interface": "ProgrammableNFT",
+   "id": "JEGruwYE13mhX2wi2MGrPmeLiVyZtbBptmVy9vG3pXRC",
+   "content": {
+    "$schema": "https://schema.metaplex.com/nft1.0.json",
+    "json_uri": "https://madlads.s3.us-west-2.amazonaws.com/json/6867.json",
+    "files": [
+     {
+      "uri": "https://madlads.s3.us-west-2.amazonaws.com/images/6867.png",
+      "cdn_uri": "https://cdn.helius-rpc.com/cdn-cgi/image//https://madlads.s3.us-west-2.amazonaws.com/images/6867.png",
+      "mime": "image/png"
+     }
+    ],
+    "metadata": {
+     "description": "Fock it.",
+     "json_name": "Mad Lads #6867",
+     "name": "Mad Lads #6867",
+     "symbol": "MAD",
+     "token_standard": "ProgrammableNonFungible"
+    },
+    "links": {
+     "external_url": "https://madlads.com",
+     "image": "https://madlads.s3.us-west-2.amazonaws.com/images/6867.png"
+    },
+    "category": "image"
+   },
+   "authorities": [
+    {
+     "address": "2RtGg6fsFiiF1EQzHqbd66AhW7R5bWeQGpTbv2UMkCdW",
+     "scopes": [
+      "full"
+     ]
+    }
+   ],
+   "compression": {
+    "eligible": false,
+    "compressed": false,
+    "data_hash": "",
+    "creator_hash": "",
+    "asset_hash": "",
+    "tree": "",
+    "seq": 0,
+    "leaf_id": 0
+   },
+   "grouping": [
+    {
+     "group_key": "collection",
+     "group_value": "J1S9H3QjnRtBbbuD4HjPV6RpRhwuk4zKbxsnCHuTgh9w",
+     "verified": true,
+     "collection_metadata": {
+      "name": "Mad Lads",
+      "symbol": "MAD",
+      "image": "https://madlads-collection.s3.us-west-2.amazonaws.com/_collection.png",
+      "description": "Fock it.",
+      "external_url": "https://madlads.com"
+     }
+    }
+   ],
+   "royalty": {
+    "royalty_model": "creators",
+    "target": null,
+    "percent": 0.042,
+    "basis_points": 420,
+    "primary_sale_happened": true,
+    "locked": false
+   },
+   "creators": [
+    {
+     "address": "5XvhfmRjwXkGp3jHGmaKpqeerNYjkuZZBYLVQYdeVcRv",
+     "share": 0,
+     "verified": true
+    },
+    {
+     "address": "2RtGg6fsFiiF1EQzHqbd66AhW7R5bWeQGpTbv2UMkCdW",
+     "share": 100,
+     "verified": true
+    }
+   ],
+   "ownership": {
+    "frozen": true,
+    "delegated": true,
+    "delegate": "FARqKAafAbgT25QcgiX5d1g6xpadgG7xymu5N6gSmp4x",
+    "ownership_model": "single",
+    "owner": "CxBhuJwhVgNMc7yjnRx3XFAsTnnbYDc2bhAGSaLBjNqZ"
+   },
+   "supply": {
+    "print_max_supply": 0,
+    "print_current_supply": 0,
+    "edition_nonce": 254
+   },
+   "mutable": true,
+   "burnt": false,
+   "token_info": {
+    "supply": 1,
+    "decimals": 0,
+    "token_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "associated_token_address": "J4z9rkXuQFVFYEcE4FnbZrT677Eh6WU3f125wyaDyQXg"
+   }
+  },
+  "compressed": {
+   "interface": "V1_NFT",
+   "id": "ErABVViz3xbwieuUZMv3iouEisMRS5rnMxTyye3vXEwM",
+   "content": {
+    "$schema": "https://schema.metaplex.com/nft1.0.json",
+    "json_uri": "https://aqua-decisive-snipe-242.mypinata.cloud/ipfs/bafkreibguojwy2xmwsioida542ws5lspcu3xff5a66bw3py7gtsjpdtqeq",
+    "files": [
+     {
+      "uri": "https://aqua-decisive-snipe-242.mypinata.cloud/ipfs/bafybeigere2ehre6vzy7z72kqql7ipmtanzkgrdhu2a6jjnsaaw32zewhq",
+      "cdn_uri": "https://cdn.helius-rpc.com/cdn-cgi/image//https://aqua-decisive-snipe-242.mypinata.cloud/ipfs/bafybeigere2ehre6vzy7z72kqql7ipmtanzkgrdhu2a6jjnsaaw32zewhq",
+      "mime": "image/gif"
+     }
+    ],
+    "metadata": {
+     "description": "Take My Muffin raised $2.9M. Here are the terms for our priv",
+     "json_name": "Muffin Pass",
+     "name": "Muffin Pass",
+     "symbol": "MUFFIN",
+     "token_standard": "NonFungible"
+    },
+    "links": {
+     "image": "https://aqua-decisive-snipe-242.mypinata.cloud/ipfs/bafybeigere2ehre6vzy7z72kqql7ipmtanzkgrdhu2a6jjnsaaw32zewhq",
+     "animation_url": "https://aqua-decisive-snipe-242.mypinata.cloud/ipfs/bafybeigere2ehre6vzy7z72kqql7ipmtanzkgrdhu2a6jjnsaaw32zewhq",
+     "external_url": "https://quiz.tmm.world"
+    },
+    "category": "image"
+   },
+   "authorities": [
+    {
+     "address": "HAWGE1SKZDirsB71dcamJx37g3HmVSbsvM79wti5yB7E",
+     "scopes": [
+      "full"
+     ]
+    }
+   ],
+   "compression": {
+    "eligible": false,
+    "compressed": true,
+    "data_hash": "9piZgzUmKaYbv6Fi8CeWc4TejiXidwmdLNkGTT7Grbcz",
+    "creator_hash": "6vdAULaNBY2HDs98RWVdiFB26Zb5PrpzyM3vzhhB1L6o",
+    "asset_hash": "44uVwabQd639yszCXo9oRhe41UvDcu5PrMSG8g7ry6Hk",
+    "tree": "7kGsheUHW6h3BqpDWge123515pWYZ7sLgVn76Wyi9zXs",
+    "seq": 9359,
+    "leaf_id": 9358
+   },
+   "grouping": [
+    {
+     "group_key": "collection",
+     "group_value": "9KPtoc8i777vJGffQQAi7XDzCjDYPzuBjRbcw5U7QnED",
+     "verified": true,
+     "collection_metadata": {
+      "name": "Muffin Pass",
+      "symbol": "MUFFIN",
+      "image": "https://aqua-decisive-snipe-242.mypinata.cloud/ipfs/bafybeigere2ehre6vzy7z72kqql7ipmtanzkgrdhu2a6jjnsaaw32zewhq",
+      "description": "Take My Muffin raised $2.9M. Here are the terms for our priv",
+      "external_url": "https://quiz.tmm.world"
+     }
+    }
+   ],
+   "royalty": {
+    "royalty_model": "creators",
+    "target": null,
+    "percent": 0,
+    "basis_points": 0,
+    "primary_sale_happened": false,
+    "locked": false
+   },
+   "creators": [
+    {
+     "address": "BuyVx1qS1dCcq1iUMYnjHPubBr2aWTRye2X4qqCv8WMH",
+     "share": 100,
+     "verified": true
+    }
+   ],
+   "ownership": {
+    "frozen": false,
+    "delegated": false,
+    "delegate": null,
+    "ownership_model": "single",
+    "owner": "CxBhuJwhVgNMc7yjnRx3XFAsTnnbYDc2bhAGSaLBjNqZ"
+   },
+   "supply": {
+    "print_max_supply": 0,
+    "print_current_supply": 0,
+    "edition_nonce": null
+   },
+   "mutable": true,
+   "burnt": false
+  },
+  "core": {
+   "interface": "MplCoreAsset",
+   "id": "JEKMYS4ccuy9fG4CWEK81DFi9rxEyyLKZKTKTQ9pj2aC",
+   "content": {
+    "$schema": "https://schema.metaplex.com/nft1.0.json",
+    "json_uri": "https://bafybeihrhcezyclxlyxjvljpchgo46b7an7agfklkseeedy6faboq2kgby.ipfs.w3s.link/0.json",
+    "files": [
+     {
+      "uri": "https://bafybeihuju5rvboovi63v6qm7cnsqjer2uhui55klw7bzitp2gb4txq7um.ipfs.w3s.link/0.png?ext=png",
+      "cdn_uri": "https://cdn.helius-rpc.com/cdn-cgi/image//https://bafybeihuju5rvboovi63v6qm7cnsqjer2uhui55klw7bzitp2gb4txq7um.ipfs.w3s.link/0.png?ext=png",
+      "mime": "image/png"
+     }
+    ],
+    "metadata": {
+     "description": "Emmy is a Lucky Buy enjoyooer",
+     "json_name": "Lucky Emmy",
+     "name": "Lucky Emmy",
+     "symbol": ""
+    },
+    "links": {
+     "image": "https://bafybeihuju5rvboovi63v6qm7cnsqjer2uhui55klw7bzitp2gb4txq7um.ipfs.w3s.link/0.png?ext=png",
+     "external_url": "",
+     "animation_url": "https://gateway.pinata.cloud/ipfs/bafybeif4sfm7jsaevzlaohqs2c7oi3kxkqylhjuqptkhjv5pv7af3wv22u?ext=mp4"
+    },
+    "category": "video"
+   },
+   "authorities": [
+    {
+     "address": "9xbgs9qkz1KYSqp191x2kuNzJeuFpze556jGRfMSEza3",
+     "scopes": [
+      "full"
+     ]
+    }
+   ],
+   "compression": {
+    "eligible": false,
+    "compressed": false,
+    "data_hash": "",
+    "creator_hash": "",
+    "asset_hash": "",
+    "tree": "",
+    "seq": 0,
+    "leaf_id": 0
+   },
+   "grouping": [
+    {
+     "group_key": "collection",
+     "group_value": "9BSPDYdLa3qAUEwinRZ2R1psekpP31RqPAScL3n2JVgN"
+    }
+   ],
+   "royalty": {
+    "royalty_model": "creators",
+    "target": null,
+    "percent": 0,
+    "basis_points": 0,
+    "primary_sale_happened": false,
+    "locked": false
+   },
+   "creators": [],
+   "ownership": {
+    "frozen": false,
+    "delegated": false,
+    "delegate": null,
+    "ownership_model": "single",
+    "owner": "FposRG79yqwn99aWexddKNmusyYtbPesxHab2K1Y6M9Q"
+   },
+   "supply": null,
+   "mutable": true,
+   "burnt": false,
+   "plugins": {
+    "edition": {
+     "data": {
+      "number": 178231
+     },
+     "index": 0,
+     "offset": 182,
+     "authority": {
+      "type": "None",
+      "address": null
+     }
+    }
+   },
+   "mpl_core_info": {
+    "plugins_json_version": 1
+   },
+   "external_plugins": [],
+   "is_agent": false
+  },
+  "legacy": {
+   "interface": "V1_NFT",
+   "id": "JEKNPhWSccutbG8nNeoC7oPrBZptC35cQ22fXmyApN8h",
+   "content": {
+    "$schema": "https://schema.metaplex.com/nft1.0.json",
+    "json_uri": "https://api.stepn.com/run/nftjson/103/84553164099",
+    "files": [
+     {
+      "uri": "https://arweave.net/SHi0vAuIqXBAk4XEMit-RCbGiE7YKsj-WK07agkTXWk",
+      "cdn_uri": "https://cdn.helius-rpc.com/cdn-cgi/image//https://arweave.net/SHi0vAuIqXBAk4XEMit-RCbGiE7YKsj-WK07agkTXWk",
+      "mime": "image/png"
+     }
+    ],
+    "metadata": {
+     "description": "NFT Sneaker, use it in STEPN to move2earn",
+     "json_name": "Sneaker #989772684",
+     "name": "Sneaker #989772684",
+     "symbol": "",
+     "token_standard": "NonFungible"
+    },
+    "links": {
+     "image": "https://arweave.net/SHi0vAuIqXBAk4XEMit-RCbGiE7YKsj-WK07agkTXWk",
+     "external_url": "https://stepn.com"
+    },
+    "category": "image"
+   },
+   "authorities": [
+    {
+     "address": "STEPNq2UGeGSzCyGVr2nMQAzf8xuejwqebd84wcksCK",
+     "scopes": [
+      "full"
+     ]
+    }
+   ],
+   "compression": {
+    "eligible": false,
+    "compressed": false,
+    "data_hash": "",
+    "creator_hash": "",
+    "asset_hash": "",
+    "tree": "",
+    "seq": 0,
+    "leaf_id": 0
+   },
+   "grouping": [],
+   "royalty": {
+    "royalty_model": "creators",
+    "target": null,
+    "percent": 0.04,
+    "basis_points": 400,
+    "primary_sale_happened": false,
+    "locked": false
+   },
+   "creators": [
+    {
+     "address": "STEPNq2UGeGSzCyGVr2nMQAzf8xuejwqebd84wcksCK",
+     "share": 100,
+     "verified": true
+    }
+   ],
+   "ownership": {
+    "frozen": false,
+    "delegated": false,
+    "delegate": null,
+    "ownership_model": "single",
+    "owner": "STEPNq2UGeGSzCyGVr2nMQAzf8xuejwqebd84wcksCK"
+   },
+   "supply": {
+    "print_max_supply": 1,
+    "print_current_supply": 0,
+    "edition_nonce": 254
+   },
+   "mutable": true,
+   "burnt": false,
+   "token_info": {
+    "supply": 1,
+    "decimals": 0,
+    "token_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "associated_token_address": "6MmmP241ooQC5yR18PQ4cfTLr7aDXUFM3vGRiTzn1Mby"
+   }
+  }
+ },
+ "accounts": {
+  "programmableMetadata": {
+   "address": "7XqWTmzh8n8ex4xorxS8qkcKEyzsdv8m7yHF5rTKDvyu",
+   "lamports": 3733800,
+   "owner": "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
+   "data": [
+    "BBU7mQjzfDvicKRwHJ/PJDL9WraVCB9vMEw3M+t9B0dp//0pb+kYb3K7Ei+Bl9rnv8mSZK2LV/XeZe8qvbOkIssgAAAATWFkIExhZHMgIzY4NjcAAAAAAAAAAAAAAAAAAAAAAAAKAAAATUFEAAAAAAAAAMgAAABodHRwczovL21hZGxhZHMuczMudXMtd2VzdC0yLmFtYXpvbmF3cy5jb20vanNvbi82ODY3Lmpzb24AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKQBAQIAAABDWuRgSlRhOMLJSTLyuXM+g4tFNNyqhsE4WdWNG4lFAQEAFTuZCPN8O+JwpHAcn88kMv1atpUIH28wTDcz630HR2kBZAEBAf4BBAEB/LMbT/nmaHvrNct8XasZ0y1npo5XYk7Lww+zrBxcCF4AAAEAAQmGIoXjcQqQ1R2eRwLemp3V6f3IrIHS0qzR4d3IJP7EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+    "base64"
+   ]
+  },
+  "legacyMetadata": {
+   "address": "44XrdDb8A5dJxf15JRVEZ1sZLerxwx6UhxwXXGiWjsmk",
+   "lamports": 3733800,
+   "owner": "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
+   "data": [
+    "BAaFLfIXeKRi6nmq6BUA6umKk13MoF+LiZyotBAhp5mA////eddO/lEwZUjC7tR1tFVY3vXOosUqvkhtQ/q0rZogAAAAU25lYWtlciAjOTg5NzcyNjg0AAAAAAAAAAAAAAAAAAAKAAAAAAAAAAAAAAAAAMgAAABodHRwczovL2FwaS5zdGVwbi5jb20vcnVuL25mdGpzb24vMTAzLzg0NTUzMTY0MDk5AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJABAQEAAAAGhS3yF3ikYup5qugVAOrpipNdzKBfi4mcqLQQIaeZgAFkAAEB/gEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+    "base64"
+   ]
+  },
+  "core": {
+   "address": "JEKMYS4ccuy9fG4CWEK81DFi9rxEyyLKZKTKTQ9pj2aC",
+   "lamports": 1696720,
+   "owner": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+   "data": [
+    "AdxC6QbPSum9ZnReQ84/QM3tsX9eLH9qnLzNGhaA0e9vAnmKARL8qYetbMmbP5jIz3RXqsHfRSCTSgbKeo8qi0SzCgAAAEx1Y2t5IEVtbXlYAAAAaHR0cHM6Ly9iYWZ5YmVpaHJoY2V6eWNseGx5eGp2bGpwY2hnbzQ2YjdhbjdhZ2ZrbGtzZWVlZHk2ZmFib3Eya2dieS5pcGZzLnczcy5saW5rLzAuanNvbgADuwAAAAAAAAAJN7gCAAQBAAAACQC2AAAAAAAAAAAAAAA=",
+    "base64"
+   ]
+  },
+  "coreCollection": {
+   "address": "9BSPDYdLa3qAUEwinRZ2R1psekpP31RqPAScL3n2JVgN",
+   "lamports": 3285120,
+   "owner": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+   "data": [
+    "BYUbqTaqX3opWfIXI/fDYFZS61IwUvDGJLafyNQTatAYCgAAAEx1Y2t5IEVtbXlYAAAAaHR0cHM6Ly9iYWZ5YmVpaHJoY2V6eWNseGx5eGp2bGpwY2hnbzQ2YjdhbjdhZ2ZrbGtzZWVlZHk2ZmFib3Eya2dieS5pcGZzLnczcy5saW5rLzAuanNvbvImHwC6bxMAAxEBAAAAAAAABQEEAAAAAAoAAQoAAABMdWNreSBFbW15AVgAAABodHRwczovL2JhZnliZWlocmhjZXp5Y2x4bHl4anZsanBjaGdvNDZiN2FuN2FnZmtsa3NlZWVkeTZmYWJvcTJrZ2J5LmlwZnMudzNzLmxpbmsvMC5qc29uBAMAAAAFAJwAAAAAAAAABAOxExtpOFl9kaWlzKAhFrUZsvJJpME2gDBK3OZCLBzGMZ4AAAAAAAAACgKjAAAAAAAAAAAAAAA=",
+    "base64"
+   ]
+  }
+ },
+ "proof": {
+  "last_indexed_slot": 457262692,
+  "root": "GB1njvPZnAucSPAwqc62aBUY9q9PERk3MUCR98f2bnCu",
+  "proof": [
+   "GesiKMBAA2iEz5WkXy5vAsCMzMMwgdwofcWXYDgdKYcq",
+   "BQCkXgWBsDMUWjJvUqkyJYp7KZ1AGGkqaLrZa3XdyQ4J",
+   "DS4jzS88UTypxpSEbBM1bdfRMixQvChEwFNnD92PqBDN",
+   "CRmvAhqbwYjN6fHAYYX5n25yNyWAw4xFLEDELfGfE9d7",
+   "2G8d752aEbaShvox8nSVpDBRFL7ytEvvkESxUyt3BFNa",
+   "67xepSk5wByDHVdXTxsnK8YxuaN1xdnNKYG8yikzcn96",
+   "3Kd5ouvCsyJzxFKmmXPRTPTAmrKZVHSvQgff8cyjpLPF",
+   "4jTFzjbVf76WzDN5myiyLa6KnpmuRrqbkeC7VHuTcNfz",
+   "5KGrvc3rMeFouHEDgEhj1oZhxcB6w48wFvZvp41VMqe1",
+   "EvxphsdRErrDMs9nhFfF4nzq8i1C2KSogA7uB96TPpPR",
+   "7Z8WB3m6y1h5g6hoCPoQoJ8Q9pVa78NEZYCU1PnTrqry",
+   "HjnrJn5vBUUzpCxzjjM9ZnCPuXei2cXKJjX468B9yWD7",
+   "4YCF1CSyTXm1Yi9W9JeYevawupkomdgy2dLxEBHL9euq",
+   "BC2xdBfqRm7P6RqpNe2qyobNXprjxsqfv6jBgDz7quyF"
+  ],
+  "node_index": 25742,
+  "leaf": "44uVwabQd639yszCXo9oRhe41UvDcu5PrMSG8g7ry6Hk",
+  "tree_id": "7kGsheUHW6h3BqpDWge123515pWYZ7sLgVn76Wyi9zXs"
+ },
+ "tree": {
+  "address": "7kGsheUHW6h3BqpDWge123515pWYZ7sLgVn76Wyi9zXs",
+  "owner": "cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK",
+  "length": 31800,
+  "header": "0100400000000e000000f02a4e285aecac2ebb38aee1859a4d52578791bbb2495421eb59363b39a9ba317d27e61800000000000000000000"
+ }
+}
