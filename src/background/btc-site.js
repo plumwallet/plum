@@ -11,6 +11,7 @@ import { bip322Digest, legacyDigest, signBip322, signLegacy } from './bip322.js'
 import * as B from './btc.js';
 import { reviewPsbt, signPsbt } from './btc-psbt.js';
 import { prepareSpend } from './btc-send.js';
+import * as HW from './hw.js';
 import { contentsOf } from './ordinals.js';
 import { MAX_PSBT_BYTES, decodePsbt, extractTx } from './psbt.js';
 import * as W from './wallet.js';
@@ -36,10 +37,15 @@ export const ownerOf = (w) => ({ segwit: w.chains.btc.address, taproot: w.chains
 /** Its addresses as sats-connect describes them, for the purposes asked (payment = bc1q, ordinals = bc1p). */
 function addressesOf(w, purposes) {
   const btc = w.chains.btc;
-  if (!btc.publicKey || !btc.taproot?.publicKey) throw err('unlock plum once so it can read this wallet\'s Bitcoin keys, then connect again', CODES.ACCESS_DENIED);
-  return purposes.map((p) => (p === 'payment'
-    ? { address: btc.address, publicKey: btc.publicKey, purpose: 'payment', addressType: 'p2wpkh', walletType: 'software' }
-    : { address: btc.taproot.address, publicKey: btc.taproot.publicKey, purpose: 'ordinals', addressType: 'p2tr', walletType: 'software' }));
+  // a Ledger wallet added without its taproot address has the payment one only
+  const ledger = w.scheme === 'ledger';
+  if (!btc.publicKey || (!btc.taproot?.publicKey && !ledger)) throw err('unlock plum once so it can read this wallet\'s Bitcoin keys, then connect again', CODES.ACCESS_DENIED);
+  const asked = ledger && !btc.taproot?.publicKey ? purposes.filter((p) => p === 'payment') : purposes;
+  if (!asked.length) throw err("this wallet is on a Ledger, and plum has only its payment (bc1q) address, no ordinals one", CODES.METHOD_NOT_SUPPORTED);
+  const walletType = ledger ? 'ledger' : 'software';
+  return asked.map((p) => (p === 'payment'
+    ? { address: btc.address, publicKey: btc.publicKey, purpose: 'payment', addressType: 'p2wpkh', walletType }
+    : { address: btc.taproot.address, publicKey: btc.taproot.publicKey, purpose: 'ordinals', addressType: 'p2tr', walletType }));
 }
 
 /** The purposes a site asks for: sats-connect's `purposes` (or wallet_connect's `addresses`); ones plum has no
@@ -143,7 +149,7 @@ export function bitcoinSites({ approval, trusted, trust, untrust, riskOf, openWe
     if (method === 'wallet_disconnect' || method === 'wallet_renouncePermissions') { await untrust(origin, 'btc'); return null; }
     if (method === 'wallet_getAccount') {
       if (!connected) throw err('connect to Plum first', CODES.ACCESS_DENIED);
-      return { id: accountId(origin, me), addresses: addressesOf(w, PURPOSES), walletType: 'software', network: NETWORK };
+      return { id: accountId(origin, me), addresses: addressesOf(w, PURPOSES), walletType: w.scheme === 'ledger' ? 'ledger' : 'software', network: NETWORK };
     }
 
     if (CONNECTS.has(method)) {
@@ -165,7 +171,7 @@ export function bitcoinSites({ approval, trusted, trust, untrust, riskOf, openWe
       const list = addressesOf(now ?? w, purposes);
       if (method === 'getAccounts') return list;
       if (method === 'wallet_requestPermissions') return true;
-      if (method === 'wallet_connect') return { id: accountId(origin, me), addresses: list, walletType: 'software', network: NETWORK };
+      if (method === 'wallet_connect') return { id: accountId(origin, me), addresses: list, walletType: (now ?? w).scheme === 'ledger' ? 'ledger' : 'software', network: NETWORK };
       return { addresses: list, network: NETWORK };
     }
 
@@ -270,14 +276,16 @@ export function bitcoinSites({ approval, trusted, trust, untrust, riskOf, openWe
   async function perform(r) {
     if (r.kind === 'btcConnect') { await trust(r.origin, r.account, 'btc'); return [r.account]; }
     const owner = await ownerFor(r);
+    // a Ledger wallet signs on the device (plum's own transfers and legacy messages: the rest is refused before here)
+    const signer = (await HW.owns('btc', r.account)) ? HW.btcSigner(r) : sign;
     if (r.kind === 'btcMessage') {
       const { address, protocol } = r.btcView;
-      const signature = protocol === 'ECDSA' ? await signLegacy(address, r.messageBytes, sign) : await signBip322(address, r.messageBytes, sign);
+      const signature = protocol === 'ECDSA' ? await signLegacy(address, r.messageBytes, signer) : await signBip322(address, r.messageBytes, signer);
       const messageHash = hex(protocol === 'ECDSA' ? legacyDigest(r.messageBytes) : bip322Digest(address, r.messageBytes).digest);
       return { signature, messageHash, address, protocol };
     }
     if (r.kind === 'btcPsbt') {
-      const bytes = await signPsbt(r.psbt, r.review, owner, sign, { finalize: r.broadcast });
+      const bytes = await signPsbt(r.psbt, r.review, owner, signer, { finalize: r.broadcast });
       if (!r.broadcast) return { psbt: b64encode(bytes) };
       const { raw, txid } = extractTx(decodePsbt(bytes));
       await B.broadcast(raw, txid);
@@ -285,7 +293,7 @@ export function bitcoinSites({ approval, trusted, trust, untrust, riskOf, openWe
       return { psbt: b64encode(bytes), txid };
     }
     if (r.kind === 'btcSend') {
-      const { raw, txid } = await B.signSpend(r.plan, owner, sign);
+      const { raw, txid } = await B.signSpend(r.plan, owner, signer);
       await B.broadcast(raw, txid);
       track(txid);
       return { txid };

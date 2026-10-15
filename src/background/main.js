@@ -592,7 +592,7 @@ function dappRequest(origin, method, params, ctx) {
   const btcMethod = method === 'btc' && params && typeof params === 'object' && typeof params.method === 'string' ? params.method : null;
   if (method === 'btc' && !btcMethod) return Promise.reject(fail('a request needs a method', -32600));
   const counted = evmMethod ? EVM_APPROVALS.has(evmMethod) : btcMethod ? BTC_APPROVALS.has(btcMethod) : APPROVAL_METHODS.has(method);
-  const run = () => (evmMethod ? handleEvm(origin, evmMethod, params.params, ctx) : btcMethod ? btcSite.request(origin, btcMethod, params.params, ctx) : handleRequest(origin, method, params, ctx));
+  const run = () => (evmMethod ? handleEvm(origin, evmMethod, params.params, ctx) : btcMethod ? btcRequest(origin, btcMethod, params.params, ctx) : handleRequest(origin, method, params, ctx));
   if (!counted) return run();
   const site = siteOf(origin);
   if ((busy.get(site) ?? 0) >= SITE_CAP) return Promise.reject(fail(`this site already has ${SITE_CAP} requests waiting`, 4100));
@@ -605,6 +605,17 @@ function dappRequest(origin, method, params, ctx) {
     busyTotal--;
   };
   return run().finally(release);
+}
+
+/** A Bitcoin site's request. What a Ledger wallet can't sign is turned down first, for a connected site (one that
+ * isn't learns nothing about the wallet). */
+async function btcRequest(origin, method, params, ctx) {
+  const me = await activeOn('btc');
+  if (me && (await trusted(origin, me, 'btc'))) {
+    const no = await HW.btcRefusal(method, params);
+    if (no) throw fail(no, -32001);
+  }
+  return btcSite.request(origin, method, params, ctx);
 }
 
 async function handleRequest(origin, method, params, ctx) {
