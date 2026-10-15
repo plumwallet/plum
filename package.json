@@ -1,0 +1,42 @@
+{
+  "name": "plum-wallet",
+  "private": true,
+  "version": "0.1.6",
+  "type": "module",
+  "description": "Self-custodial Solana, Ethereum and Bitcoin wallet for Firefox and Chromium browsers.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "test": "node --test --test-concurrency=1 \"test/*.test.mjs\" \"test/redteam/*.test.mjs\"",
+    "e2e": "node scripts/e2e-firefox.mjs",
+    "e2e:chromium": "node scripts/e2e-chromium.mjs",
+    "live": "node scripts/live-mainnet.mjs",
+    "lint": "web-ext lint --source-dir dist/firefox",
+    "pack": "node scripts/pack.mjs",
+    "smoke:chromium": "node scripts/smoke-chromium.mjs",
+    "sign": "node scripts/sign.mjs",
+    "redteam": "node scripts/redteam/attacks-firefox.mjs",
+    "localnet": "node scripts/redteam/localnet-send.mjs"
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@scure/base": "2.4.0",
+    "@scure/bip32": "2.4.0",
+    "@scure/bip39": "2.4.0",
+    "uqr": "0.1.3"
+  },
+  "devDependencies": {
+    "@solana/spl-token": "0.4.15",
+    "@solana/web3.js": "1.99.0",
+    "bitcoinjs-lib": "7.0.4",
+    "esbuild": "0.28.2",
+    "opentype.js": "1.3.4",
+    "puppeteer-core": "25.12.0",
+    "viem": "2.57.7",
+    "web-ext": "10.7.0"
+  }
+}

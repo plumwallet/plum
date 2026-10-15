@@ -1,0 +1,8 @@
+node_modules/
+dist/
+artifacts/
+shots/
+src/content/icon.js
+rpc.local.txt
+amo.local.txt
+HANDOFF.md

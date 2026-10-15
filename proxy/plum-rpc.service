@@ -1,0 +1,44 @@
+# plum's RPC proxy (https://plum.fun/rpc): passes the plum wallet's Solana calls on to the paid RPC. The paid RPC's URL,
+# key and all, is only in /etc/plum-rpc/plum-rpc.env (UPSTREAM_RPC=..., root-only: systemd reads it before the service
+# starts, as a user made up for it that owns nothing). Listens on 127.0.0.1 only; cloudflared brings plum.fun/rpc to it.
+[Unit]
+Description=plum rpc (plum.fun/rpc): the plum wallet's Solana RPC proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+EnvironmentFile=/etc/plum-rpc/plum-rpc.env
+Environment=NODE_ENV=production
+ExecStart=/opt/node-v24.19.0-linux-x64/bin/node /srv/plum-rpc/rpc-proxy.mjs
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Nice=5
+MemoryMax=512M
+TasksMax=64
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

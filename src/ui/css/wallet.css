@@ -1,0 +1,481 @@
+/* The wallet's styles: the toolbar popup (380px) and the approval window, on top of base.css and frames.css.
+ * White and grey text on a dark background; colour is kept for the logo, the wallet icons, and red and orange for
+ * dangers and warnings. */
+:root {
+  --paper: #110d17;
+  --paper-2: #18131f;
+  --ink: #ffffff;
+  --ink-2: #e0e0e0;
+  --mute: #9e9e9e;
+  --soft: #6b6b6b;
+  --gray: #3a3a3a;
+  --faint: #1f1f1f;
+  --green: #ffffff;
+  --shade: #bdbdbd;
+  --green-ink: #ffffff;
+  --green-wash: #1a1a1a;
+  --white: #ffffff;
+  /* the way on: the leaf's green, on [ go -> ] brackets and good news */
+  --go: #8ee6b0;
+  /* the band that lights up under the pointer */
+  --hi: rgba(255, 255, 255, 0.06);
+  --ease: 0.16s ease;
+}
+
+/* ------------------------------------------------------------ one size for every character */
+/* one font size everywhere: secondary text is grey rather than smaller. Only pictures drawn in characters (the logo,
+ * the wallet icons) set their own sizes. */
+html { font-size: 12.5px; }
+body { font-size: 12.5px; line-height: 20px; }
+.btn, .btn-sm, .btn-go, .btn-go.lg, .btn-go.btn-sm, .field > label, .label, .field .err, .hint, .input, .textarea, .toggle,
+.seg button, .chip, .note, .bar, .kv, .box-head h2, .box-head h3, .h3, .kicker, .lnk, .spin, small, code, pre, h1, h2, h3, p {
+  font-size: inherit;
+}
+small { color: var(--mute); }
+
+/* password and key fields are plain text inputs drawn hidden (secretField in parts.js), so Firefox's password manager
+ * never pops up over them; each hidden character shows as a centred asterisk, not a dot: plum-mask.otf maps the dots
+ * Firefox draws (U+25CF, U+2022) to one (scripts/mask-font.mjs); every other character stays JetBrains Mono */
+@font-face { font-family: 'PlumMask'; src: url('../fonts/plum-mask.otf') format('opentype'); unicode-range: U+2022, U+25CF; font-display: block; }
+input[type='password'], .input.masked { font-family: 'PlumMask', var(--mono); }
+.input.masked { -webkit-text-security: disc; }
+.secret-field { display: grid; gap: 4px; min-width: 0; }
+.caps-on { line-height: 18px; color: var(--gold); }
+.caps-on::before { content: '[!] '; font-weight: 800; }
+
+html, body { width: 380px; }
+body { min-height: 0; padding: 0 16px 14px 14px; }
+html.page, html.page body, html.window, html.window body { width: 100%; }
+html.page body { max-width: 540px; margin: 0 auto; padding: 28px 18px 40px; }
+html.window body { max-width: 460px; margin: 0 auto; }
+.boot { color: var(--mute); padding: 24px 0; }
+
+/* ------------------------------------------------------------ the typed scrollbar (scrollbar.js) */
+html.tbar-on { scrollbar-width: none; }
+.tbar { position: fixed; top: 0; right: 0; bottom: 0; z-index: 60; width: 1.2ch; display: flex; justify-content: center; cursor: default; user-select: none; touch-action: none; }
+.tbar pre { margin: 0; font-weight: 700; line-height: 12.5px; color: var(--gray); white-space: pre; text-align: center; }
+.tbar b { color: var(--soft); transition: color var(--ease); }
+.tbar:hover b { color: var(--ink-2); }
+.tbar.held b { color: var(--go); }
+/* boxes that scroll inside a screen: a thin bar in the sheet's own inks */
+* { scrollbar-width: thin; scrollbar-color: var(--gray) transparent; }
+
+/* ------------------------------------------------------------ the head: the account, in its own box, always on top */
+.top { position: sticky; top: 0; z-index: 40; background: var(--paper); padding: 10px 0 6px; }
+/* a strip of the sheet above it too, so nothing scrolling under the head peeks out over its top edge */
+.top::before { content: ''; position: absolute; left: 0; right: 0; bottom: 100%; height: 12px; background: var(--paper); }
+.top-in {
+  display: flex; align-items: center; gap: 1.2ch; min-height: 64px; padding: 4px 1ch;
+  border-style: solid; border-color: transparent; border-image-repeat: round; border-width: 0.769em 0.6em; border-image-slice: 76.923 60 76.923 60; border-image-source: var(--frh-soft);
+}
+.top-in:hover, .top-in:focus-within { border-image-source: var(--frh-ink); }
+.top-icon { flex: none; display: grid; place-items: center; width: 44px; height: 44px; }
+.top-icon .icon-art { transition: transform var(--ease); }
+.top-in:hover .top-icon .icon-art { transform: scale(1.1); }
+.who { display: grid; justify-items: start; gap: 2px; line-height: 20px; min-width: 0; }
+/* under the wallet's name: the account it's in, then its address on each chain, a click copying one */
+.who-2 { display: flex; align-items: baseline; gap: 1.2ch; min-width: 0; max-width: 100%; }
+.who-acct { color: var(--soft); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chips { display: inline-flex; gap: 0.4ch; flex: none; }
+.copy-chip { min-width: 5ch; text-align: center; }
+.copy-chip.done { color: var(--go); }
+.copy-chip.done::before, .copy-chip.done::after { color: var(--go); }
+/* the name lists your accounts; the pointer stays an arrow over it (a hand means "copy" up here) */
+.acct {
+  display: inline-flex; align-items: baseline; gap: 1ch; max-width: 100%; min-width: 0; padding: 0 0.4ch; margin-left: -0.4ch;
+  border: 0; background: none; text-align: left; font: 700 1em/20px var(--mono); color: var(--ink); cursor: default;
+  transition: background var(--ease), color var(--ease);
+}
+.acct b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct:hover, .acct:focus-visible { background: var(--hi); color: var(--go); outline: none; }
+.caret { color: var(--soft); font-weight: 400; display: inline-block; transition: transform var(--ease), color var(--ease); }
+.acct:hover .caret, .acct:focus-visible .caret { color: var(--go); transform: translateY(2px); }
+.grow { flex: 1 1 auto; }
+.net { font: 700 1em/20px var(--mono); color: var(--gold); text-transform: uppercase; white-space: nowrap; }
+.net::before { content: '['; color: var(--soft); font-weight: 400; }
+.net::after { content: ']'; color: var(--soft); font-weight: 400; }
+.tab-btn {
+  flex: none; align-self: flex-start; height: 24px; padding: 0 0.4ch; border: 0; background: none; font: 400 1em/24px var(--mono); color: var(--mute); white-space: nowrap; cursor: default;
+  transition: background var(--ease), color var(--ease);
+}
+.tab-btn:hover, .tab-btn:focus-visible { color: var(--ink); background: var(--hi); outline: none; }
+
+/* something to copy: its text and a [copy] tag, one button; the only hand-pointer in the head */
+.copy-me {
+  display: inline-flex; align-items: baseline; gap: 1ch; max-width: 100%; padding: 0 0.4ch; margin-left: -0.4ch; border: 0; background: none;
+  font: 400 1em/20px var(--mono); color: var(--mute); text-align: left; cursor: pointer; transition: background var(--ease), color var(--ease);
+}
+.copy-me .cp-tag { color: var(--mute); white-space: nowrap; }
+.copy-me .cp-tag::before { content: '['; color: var(--soft); }
+.copy-me .cp-tag::after { content: ']'; color: var(--soft); }
+.copy-me:hover, .copy-me:focus-visible { background: var(--hi); color: var(--ink); outline: none; }
+.copy-me:hover .cp-tag, .copy-me:focus-visible .cp-tag { color: var(--ink); }
+.copy-me:hover .cp-tag::before, .copy-me:hover .cp-tag::after { color: var(--go); }
+.copy-me.done, .copy-me.done .cp-tag { color: var(--go); }
+.copy-me.done .cp-tag::before, .copy-me.done .cp-tag::after { color: var(--go); }
+
+/* small typed words: [max] [paste] [refresh] */
+.mini { border: 0; background: none; padding: 0 0.2ch; font: 400 1em/20px var(--mono); color: var(--mute); white-space: nowrap; cursor: pointer; transition: background var(--ease), color var(--ease); }
+.mini::before { content: '['; color: var(--soft); transition: color var(--ease); }
+.mini::after { content: ']'; color: var(--soft); transition: color var(--ease); }
+.mini:hover { color: var(--ink); background: var(--hi); }
+.mini:hover::before, .mini:hover::after { color: var(--go); }
+.mini:disabled { color: var(--ink); background: none; cursor: default; }
+.mini .spin { color: var(--go); }
+.lnk { border: 0; background: none; padding: 0; font: 700 1em/20px var(--mono); color: var(--mute); cursor: pointer; }
+.lnk:hover { color: var(--ink); }
+.danger, .danger::before, .danger::after { color: var(--red) !important; }
+
+/* ------------------------------------------------------------ layout */
+.screen { display: grid; gap: 12px; padding-top: 8px; }
+.screen-head { display: flex; align-items: center; justify-content: space-between; min-height: 30px; }
+.screen-head .h3 { margin: 0; }
+.small { line-height: 18px; margin: 0; }
+.fine { line-height: 18px; color: var(--soft); margin: 2px 0 0; }
+.center { text-align: center; }
+.stack { display: grid; gap: 10px; }
+.stack.tight { gap: 6px; }
+.row { display: flex; align-items: center; gap: 1ch; flex-wrap: wrap; }
+.row.centred { justify-content: center; }
+/* (min-width 0: Chromium gives an input a wide minimum of its own, which pushed the button beside it onto a new line) */
+.row > .input { flex: 1 1 12ch; width: auto; min-width: 0; }
+p { margin: 0; line-height: 20px; }
+/* a box's lines sit one gap apart, whatever they are; a lone button or switch keeps its own width */
+.box { display: grid; gap: 10px; align-content: start; padding-bottom: 4px; }
+.box > .box-head { margin-bottom: -6px; }
+.box > .btn, .box > .toggle { justify-self: start; }
+.head-side { display: flex; align-items: center; gap: 1.6ch; }
+.head-side .btn-sm { height: 20px; padding: 0; }
+.box.ink { border-image-source: var(--fr-ink); }
+.box.hot { border-image-source: var(--fr-hot); }
+.box .stack { padding: 2px 0 4px; }
+/* a dashed rule between the parts of a box */
+.rule { height: 20px; margin: -6px 0; background: var(--ln-dash-faint) repeat-x 0 0 / 0.6em 20px; }
+
+/* every typed button: grey brackets, the word lighting up under the pointer, on a faint band */
+.btn { transition: background var(--ease), color var(--ease); }
+.btn::before, .btn::after { transition: color var(--ease); }
+.btn:hover:not(:disabled) { background: var(--hi); color: var(--ink); }
+.btn:hover:not(:disabled)::before, .btn:hover:not(:disabled)::after { color: var(--go); }
+.btn-sm { height: 30px; }
+/* the answers, the same everywhere: the way on is [ go -> ] in the leaf's green brackets, the way back (back, cancel,
+ * reject) is [ back ] in red ones. Where a box or screen has both, they sit at its foot, back on the left. */
+.btn-go { min-height: 40px; padding: 0 0.6em; border: 0; border-image: none; background: none; color: var(--ink); transition: background var(--ease), color var(--ease); }
+.btn-go::before, .btn-go::after { position: static; border: 0; border-image: none; font-weight: 400; color: var(--go); }
+.btn-go::before { content: '[\00a0'; }
+.btn-go::after { content: '\00a0]'; }
+.btn-go:hover:not(:disabled) { border-image: none; color: var(--go); background: var(--hi); }
+.btn-go:active { left: 0; top: 0; }
+.btn-go:active::before { content: '[\00a0'; }
+.btn-go:disabled, .btn-go:disabled::before, .btn-go:disabled::after { color: var(--soft); }
+.btn-go:disabled::before { content: '[\00a0'; }
+.btn-go.block { width: 100%; margin-right: 0; }
+.btn-go.btn-sm { min-height: 30px; }
+/* "create a new wallet" keeps its typed box, as wide as the box it's in, like the two tiles under it */
+.btn-go.framed {
+  border-style: solid; border-color: transparent; border-image-repeat: round; border-width: 0.769em 0.6em;
+  border-image-slice: 76.923 60 76.923 60; border-image-source: var(--frh-ink); padding: 0 1ch;
+}
+.btn-go.framed::before, .btn-go.framed::after, .btn-go.framed:active::before { content: none; }
+.btn-go.framed:hover { border-image-source: var(--frh-green); color: var(--ink); }
+.btn.no { color: var(--ink); }
+.btn.no::before, .btn.no::after, .btn.no:hover::before, .btn.no:hover::after { color: var(--red); }
+.actions { display: flex; justify-content: space-between; align-items: center; gap: 1ch; padding-top: 2px; }
+.actions > .btn-go.block { width: auto; }
+.toggle { transition: color var(--ease); }
+.seg button { transition: background var(--ease), color var(--ease); }
+.seg button:hover:not(.on) { background: var(--hi); }
+.t-go { color: var(--go); }
+
+/* an account's icon: an emoji redrawn in typed characters and painted (src/shared/icons.js), 15 x 9 characters set
+ * at line-height 1 so the strokes join up. Big on home at the text's size, small in the picker's square (the chosen
+ * one framed in green) and in the head, tiny beside a name. A picture, so it keeps its own size. */
+.icon-art { margin: 0; white-space: pre; font-weight: 700; line-height: 1; color: var(--ink); user-select: none; }
+/* each icon is nudged (--dx, --dy from icons.js) so the middle of what's drawn sits in the middle of its box, and it
+ * grows and pops around that middle too */
+.icon-art { translate: var(--dx, 0px) var(--dy, 0px); transform-origin: calc(50% - var(--dx, 0px)) calc(50% - var(--dy, 0px)); }
+.icon-art.big { font-size: 12.5px; }
+.icon-art.pick { font-size: 4.6px; }
+.icon-art.tiny { font-size: 2.4px; flex: none; }
+/* the icon square, centred at the top of a form: a typed frame holding the account's icon, big, or a question mark until
+ * one is picked. A click drops every icon down under it (they cascade in); a pick folds them away and pops the new one
+ * into the square. Grey and breathing while it waits, bright when pointed at or open. */
+.face { display: grid; justify-items: center; gap: 4px; }
+.face-square {
+  display: grid; place-items: center; padding: 8px 1.2ch; cursor: pointer; background: none; color: inherit; font: inherit;
+  border-style: solid; border-color: transparent; border-image-repeat: round; border-width: 0.769em 0.6em; border-image-slice: 76.923 60 76.923 60; border-image-source: var(--frh-soft);
+  transition: transform .15s ease;
+}
+.face-square.set { border-image-source: var(--frh-ink); }
+.face-square:hover, .face-square:focus-visible, .face.open .face-square { border-image-source: var(--frh-green); outline: none; }
+.face-square:active { transform: scale(.96); }
+.face-cap { line-height: 18px; color: var(--soft); }
+.face.open .face-cap { color: var(--ink-2); }
+.ask .ask-l { color: #9d97ad; transition: color .2s; }
+.ask .ask-f { color: #5a536b; transition: color .2s; }
+.face-square:hover .ask-l, .face-square:focus-visible .ask-l, .face.open .ask-l { color: #cdbff3; }
+.face-square:hover .ask-f, .face-square:focus-visible .ask-f, .face.open .ask-f { color: #ab8af7; }
+.ask { animation: ask-breathe 2.4s ease-in-out infinite; }
+.face-square:hover .ask, .face.open .ask { animation: none; }
+@keyframes ask-breathe { 50% { opacity: .5; } }
+.face-show.pop .icon-art { animation: face-pop .45s cubic-bezier(.2, 1.5, .4, 1) both; }
+@keyframes face-pop { from { opacity: 0; transform: scale(.35) rotate(-10deg); } }
+/* while picking, the icons take the place of the rest of the form (the name, the password, the answers) instead of
+ * pushing it down, with a little room under the last row; after a pick the form comes back */
+.face-drop { display: none; width: 100%; padding-bottom: 18px; }
+.face.open .face-drop { display: block; }
+.picking > :not(.face):not(.box-head):not(.screen-head) { display: none; }
+.back-in > :not(.face):not(.box-head):not(.screen-head) { animation: back-in .3s ease both; }
+@keyframes back-in { from { opacity: 0; transform: translateY(6px); } }
+.faces { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; }
+html.page .faces { grid-template-columns: repeat(8, 1fr); }
+.face-pick {
+  display: grid; place-items: center; height: 64px; padding: 0; background: none; cursor: pointer;
+  border-style: solid; border-color: transparent; border-image-repeat: round; border-width: 0.769em 0.6em; border-image-slice: 76.923 60 76.923 60; border-image-source: none;
+}
+.face-pick:hover, .face-pick:focus-visible { border-image-source: var(--frh-faint); outline: none; }
+.face-pick.on { border-image-source: var(--frh-green); }
+.face-pick .icon-art { transition: transform .14s ease; }
+.face-pick:hover .icon-art, .face-pick:focus-visible .icon-art { transform: scale(1.3); }
+.face.open .face-pick { animation: face-in .32s ease both; animation-delay: calc(var(--i) * 8ms); }
+@keyframes face-in { from { opacity: 0; transform: translateY(-8px) scale(.8); } }
+@media (prefers-reduced-motion: reduce) {
+  .face-square, .face-pick .icon-art, .top-icon .icon-art { transition: none; }
+  .ask, .face-show.pop .icon-art, .face.open .face-pick, .back-in > * { animation: none; }
+}
+.err-line { color: var(--red); line-height: 18px; }
+.err-line::before { content: '[!] '; font-weight: 800; }
+.t-gold { color: var(--gold); }
+
+/* ------------------------------------------------------------ the plum, big (welcome, unlock, setup) */
+/* the logo is 64 characters wide: it takes the text's size, or less if the room is narrower (the popup) */
+.hero { display: grid; justify-items: center; padding: 26px 0 18px; container-type: inline-size; }
+.hero .logo-art { --logo-fs: min(1em, calc(100cqw / 38.6)); }
+/* drawn on its own surface (opacity just under 1), so Windows smooths the logo's one-pixel strokes in grey instead of
+ * ClearType's blue and orange fringes, which made the white word look coloured */
+.logo-art { opacity: 0.999; }
+/* the logo: the word in white like all the text; the plum's outline in its own purple, so it stands apart (scripts/icons.mjs
+ * reads these) */
+.logo-art, .logo-art .lg-wd { color: #ffffff; }
+.logo-art .lg-rd { color: #ab8af7; }
+/* setup's last step: "ready" in the logo's letters, at the text's size */
+.ready { display: grid; justify-items: center; padding: 6px 0 10px; }
+.ready-art { --logo-fs: 1em; }
+
+/* the other ways in: a quiet line, then two square tiles side by side, the name in white and what it takes under it */
+.or { margin-top: 4px; line-height: 18px; color: var(--soft); }
+.opts { display: grid; grid-template-columns: 1fr 1fr; gap: 1ch; }
+.opt {
+  display: grid; gap: 2px; min-width: 0; padding: 6px 1ch; text-align: left; cursor: pointer; background: none; color: var(--ink);
+  font: 700 1em/18px var(--mono); white-space: nowrap; transition: background var(--ease);
+  border-style: solid; border-color: transparent; border-image-repeat: round; border-width: 0.769em 0.6em; border-image-slice: 76.923 60 76.923 60; border-image-source: var(--frh-soft);
+}
+.opt .ht { color: var(--soft); font-weight: 400; }
+.opt:hover { border-image-source: var(--frh-green); background: var(--hi); }
+.opt:hover .ht { color: var(--mute); }
+.unlock-form { display: grid; gap: 10px; padding: 2px 0 6px; }
+.forgot { margin-top: 4px; }
+.reset { display: grid; gap: 6px; margin-top: 8px; }
+
+/* ------------------------------------------------------------ home: the account's card */
+/* one box: the icon and the name, a rule, the balance, a rule, the four ways to use it */
+.card { gap: 10px; padding-top: 4px; }
+.me { display: grid; justify-items: center; gap: 8px; padding: 10px 0 2px; }
+.me-name { font-weight: 700; color: var(--ink); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bal { display: flex; justify-content: space-between; align-items: baseline; gap: 1ch; min-height: 20px; color: var(--ink-2); }
+.bal-l { display: flex; gap: 1.4ch; align-items: baseline; min-width: 0; }
+.bal-l b { color: var(--ink); }
+.acts { display: flex; justify-content: space-between; margin: 0 -0.4ch; }
+.acts .btn { padding: 0 0.4em; height: 36px; color: var(--ink-2); }
+
+/* holdings: one line each, lit under the pointer */
+.tks { display: grid; }
+.tk {
+  display: grid; grid-template-columns: 5ch minmax(0, 1fr) auto; gap: 0 1.4ch; align-items: center; padding: 8px 0.6ch; margin: 0 -0.6ch;
+  width: calc(100% + 1.2ch); border: 0; background: none; text-align: left; color: inherit; font: inherit; cursor: pointer; transition: background var(--ease);
+}
+.tk + .tk { background: var(--ln-dash-faint) repeat-x 0 -10px / 0.6em 20px; }
+.tk:hover { background-color: var(--hi); }
+.tk:hover .tk-n b { color: var(--go); }
+.tk-n, .tk-v { display: grid; line-height: 20px; min-width: 0; }
+.tk-n b, .tk-n > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tk-n b { transition: color var(--ease); }
+.tk-v { text-align: right; }
+/* a holding's second line (its name, its value): quieter, the same size */
+.tk-n > span, .tk-v > span { color: var(--mute); }
+.unv { color: var(--hot); }
+/* a coin's typed mark (Solana's three bars in its gradient, Ethereum's diamond, Bitcoin's B), a little apart so the
+ * lines stay apart, at the text's size: its five columns fill the token list's first column */
+.sol-mark { margin: 0; font: 700 12.5px/1.2 var(--mono); color: var(--ink); white-space: pre; user-select: none; }
+/* a token's chain, beside its name when a wallet has more than one */
+.chain-tag { color: var(--soft); }
+/* a token's line has no picture: its ticker and name, then its amount and value */
+.tk.plain { grid-template-columns: minmax(0, 1fr) auto; }
+.empty { padding: 8px 0 2px; }
+
+/* ------------------------------------------------------------ forms: send, swap */
+.tok-btn {
+  display: inline-flex; align-items: center; gap: 1ch; height: 36px; padding: 0 1ch; background: none; cursor: pointer;
+  font: 700 1em/20px var(--mono); color: var(--ink); white-space: nowrap; transition: background var(--ease);
+  border-style: solid; border-color: transparent; border-image-repeat: round; border-width: 0.769em 0.6em; border-image-slice: 76.923 60 76.923 60; border-image-source: var(--frh-soft);
+}
+.tok-btn:hover { border-image-source: var(--frh-green); background: var(--hi); }
+.tok-btn:hover .caret { color: var(--go); transform: translateY(2px); }
+.input-group .suffix-btn { position: absolute; right: 1.6ch; display: flex; gap: 1ch; }
+.input-group .input { padding-right: 9ch; }
+.swap-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1ch; align-items: center; }
+.swap-row .input { font-weight: 700; }
+.out {
+  display: flex; align-items: center; gap: 0.4ch; height: 40px; padding: 0 1.6ch; min-width: 0; overflow: hidden; white-space: nowrap;
+  border-style: solid; border-color: transparent; border-image-repeat: round; border-width: 0.769em 0.6em; border-image-slice: 76.923 60 76.923 60; border-image-source: var(--frh-faint);
+}
+.flip-row { display: flex; justify-content: center; margin: -8px 0 -6px; }
+.kvs { display: grid; }
+.kv { line-height: 20px; }
+.kv.warn > span:last-child { color: var(--hot); }
+.kv.good > span:last-child { color: var(--green-ink); }
+.label { justify-content: flex-start; }
+.field > .row, .field > span { color: var(--mute); }
+
+/* an address in fours, its ends lit */
+.addr { display: flex; flex-wrap: wrap; gap: 0 1ch; max-width: 29ch; font: 400 1em/20px var(--mono); color: var(--ink-2); padding: 2px 0; }
+.screen > .addr, .preview > .addr { justify-self: center; justify-content: center; }
+.addr .end { color: var(--ink); font-weight: 700; }
+/* an address you can copy: a click anywhere on it; [copy] says [copied] for a moment */
+.addr.copy-me { max-width: 31ch; padding: 4px 1ch; margin: 0; justify-content: center; flex-wrap: wrap; }
+.addr.copy-me .cp-tag { flex-basis: 100%; text-align: center; }
+
+/* ------------------------------------------------------------ what a transaction does */
+.preview { display: grid; gap: 8px; }
+.chg-row { display: flex; align-items: baseline; justify-content: space-between; gap: 1ch; }
+.chg { display: flex; gap: 1ch; align-items: baseline; font: 700 1em/22px var(--mono); min-width: 0; }
+.chg .sign { width: 1ch; }
+.chg .amt { overflow-wrap: anywhere; }
+.chg.up { color: var(--go); }
+.chg.down { color: var(--red); }
+.chg .sym { color: var(--ink); }
+.warns { display: grid; gap: 6px; }
+.note { line-height: 20px; }
+.note.hot { color: var(--hot); border-image-source: var(--frh-hot); }
+.note.hot::before { content: '[!] '; font-weight: 800; }
+.note.err.lvl-danger::before { content: '[!!] '; }
+.note.lvl-info { color: var(--mute); }
+.note.lvl-info::before { content: '[i] '; font-weight: 800; color: var(--soft); }
+details.more summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; gap: 1ch; color: var(--mute); transition: color var(--ease); }
+details.more summary::-webkit-details-marker { display: none; }
+details.more summary:hover { color: var(--ink); }
+details.more[open] summary { margin-bottom: 8px; }
+.ixs { margin: 6px 0; padding-left: 3ch; line-height: 20px; color: var(--ink-2); }
+.logs { line-height: 18px; color: var(--soft); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; }
+
+/* a site's standing */
+.risk .risk-t { font-weight: 800; line-height: 20px; }
+.risk.red .risk-t, .risk.red p { color: var(--red); }
+.risk.hot .risk-t, .risk.hot p { color: var(--hot); }
+.risk p { line-height: 20px; padding-bottom: 2px; }
+
+/* sent: plum's launch log */
+.log { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.log li { display: grid; grid-template-columns: 2ch minmax(0, 1fr) auto; gap: 0 1ch; color: var(--ink-2); }
+.log li::before { content: '>'; color: var(--green-ink); font-weight: 800; }
+.log .r { color: var(--green-ink); font-weight: 700; }
+
+/* receive: the QR typed (qr.js), one bold m per dark module, dark on a light card so every phone camera reads it. The
+ * 0.6em line makes each module a square 7.5px cell at the text's 12.5px; the 2px stroke closes each m and the seams
+ * between neighbours, so a module reads as solid ink (at 1.5px Firefox at 2x still shows seams a scanner reads as light).
+ * The quiet zone is typed too: 4 modules of spaces. */
+.qr-box { display: grid; place-items: center; padding: 4px 0 2px; }
+.qr-ascii {
+  display: block; margin: 0; padding: 0;
+  font-weight: 700; line-height: 0.6em; letter-spacing: 0; white-space: pre;
+  color: var(--paper); background: var(--ink-2);
+  -webkit-text-stroke: 2px currentColor;
+  font-variant-ligatures: none; font-feature-settings: 'liga' 0, 'calt' 0;
+  user-select: none; cursor: default;
+  /* high-contrast themes recolour text and drop backgrounds; a QR must stay dark on light */
+  forced-color-adjust: none;
+}
+
+/* history: one line each, a rule between, lit under the pointer */
+.hist { list-style: none; margin: 0; padding: 0; display: grid; }
+.hist li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 0 1.6ch; padding: 8px 0.6ch; margin: 0 -0.6ch; transition: background var(--ease); }
+.hist li.wait { grid-template-columns: 1fr; }
+/* the time and the outcome in columns of their own width, so every line's sit under the one above */
+.hist li:not(.wait) { grid-template-columns: minmax(0, 1fr) 8ch 8ch; }
+.hist.tagged li:not(.wait) { grid-template-columns: minmax(0, 1fr) 3ch 8ch 8ch; }
+.hist li:not(.wait) > span { text-align: right; white-space: nowrap; }
+.hist li + li { background: var(--ln-dash-faint) repeat-x 0 -10px / 0.6em 20px; }
+.hist li:not(.wait):hover { background-color: var(--hi); }
+.hist a { color: var(--ink-2); font-weight: 700; transition: color var(--ease); }
+.hist li:hover a { color: var(--go); }
+
+/* accounts: a box per account (its recovery phrase), its wallets inside, "+ new wallet" at its foot */
+.accts { display: grid; }
+.acct-row { display: flex; align-items: center; gap: 1ch; }
+.acct-row + .acct-row, .acct-open + .acct-row, .acct-row + .acct-open, .acct-open + .acct-open { background: var(--ln-dash-faint) repeat-x 0 -10px / 0.6em 20px; }
+.acct-row .pick { flex: 1; display: flex; gap: 1.2ch; align-items: center; min-width: 0; padding: 8px 0.6ch; margin-left: -0.6ch; border: 0; background: none; font: inherit; color: var(--ink-2); text-align: left; cursor: pointer; transition: background var(--ease), color var(--ease); }
+.acct-row .pick b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acct-row .pick .addr-s { flex: none; }
+.acct-row .pick .chip { flex: none; }
+.acct-row.on .pick { color: var(--ink); }
+.acct-row .pick:hover { color: var(--go); background: var(--hi); }
+.acct-row .mark { width: 1ch; color: var(--green-ink); font-weight: 800; flex: none; }
+.acct-open { display: grid; }
+.acct-tools { display: grid; gap: 8px; padding: 2px 0 12px 2.2ch; }
+/* an account's own tools sit above its wallets, under a rule */
+.acct-tools.acct-level { padding: 0 0 22px; background: var(--ln-dash-faint) repeat-x 0 100% / 0.6em 20px; }
+.acct-box > .add-wallet { justify-self: start; margin: -4px 0 0 -0.6em; }
+.acct-box .head-side { gap: 1.2ch; }
+/* a wallet's addresses, one per chain: the chain's name, then the address in fours */
+.addrs { display: grid; gap: 6px; }
+.addr-line { display: grid; gap: 0; justify-items: start; }
+.addr-line .label { color: var(--mute); }
+.addr-line .label::before { content: '> '; color: var(--green-ink); }
+.addr-line .addr.copy-me { justify-content: flex-start; margin-left: -1ch; }
+.addr-line .addr.copy-me .cp-tag { flex-basis: auto; }
+/* the ways to add: one line each, its name, what it takes, and an arrow lit under the pointer */
+.menu { display: grid; }
+.menu-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0 1.6ch; align-items: baseline; padding: 8px 0.6ch; margin: 0 -0.6ch;
+  border: 0; background: none; font: inherit; color: var(--ink-2); text-align: left; cursor: pointer; transition: background var(--ease), color var(--ease);
+}
+.menu-row + .menu-row { background: var(--ln-dash-faint) repeat-x 0 -10px / 0.6em 20px; }
+.menu-row b { white-space: nowrap; }
+.menu-row .dim { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-row .go-arrow { color: var(--soft); transition: color var(--ease), transform var(--ease); }
+.menu-row:hover { background-color: var(--hi); color: var(--ink); }
+.menu-row:hover .go-arrow { color: var(--go); transform: translateX(3px); }
+.reveal { display: grid; gap: 6px; }
+.secret { display: grid; gap: 4px; padding: 0 1ch 4px; }
+.secret code { font: 700 1em/20px var(--mono); color: var(--red); overflow-wrap: anywhere; user-select: all; }
+
+/* settings */
+.sites { display: grid; gap: 4px; }
+.site { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 0 1.4ch; align-items: baseline; }
+.site b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toggle { height: auto; min-height: 24px; text-align: left; }
+
+/* ------------------------------------------------------------ setup */
+.setup { display: grid; gap: 16px; }
+.words-box { padding: 6px 1ch 4px; }
+.words { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 2ch; }
+.words li { display: flex; gap: 1ch; min-width: 0; }
+.words .n { color: var(--soft); white-space: pre; }
+.words.hidden b { color: transparent; background: var(--ln-dash-soft) repeat-x 0 0 / 0.6em 20px; user-select: none; }
+.words.long { gap: 6px 2ch; }
+/* the wallets a phrase holds, as switches: the wallet and its address, then what it holds (green when it's used) */
+/* (rows keep their height: in a box that scrolls, a grid would squeeze them to fit) */
+.picks { display: grid; grid-auto-rows: max-content; gap: 2px; max-height: 260px; overflow: auto; }
+.acct-pick { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 1ch; row-gap: 0; padding: 4px 0; height: auto; align-items: baseline; }
+.acct-pick::before { grid-row: span 2; }
+.acct-pick .pk-l, .acct-pick .pk-r { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
+.acct-pick .pk-l b { font-weight: 700; }
+.acct-pick .pk-r { grid-column: 2; }
+
+/* ------------------------------------------------------------ the approval window */
+.approve .site-line { display: flex; justify-content: space-between; align-items: baseline; gap: 1ch; padding-bottom: 4px; }
+.approve .host { line-height: 22px; overflow-wrap: anywhere; color: var(--white); }
+.msg { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 20px; color: var(--ink); max-height: 240px; overflow: auto; }
+.msg.hex { color: var(--mute); line-height: 18px; }
+.answer { padding-top: 6px; }
+.ack-row { display: flex; }
