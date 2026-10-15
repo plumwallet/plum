@@ -156,7 +156,11 @@ async function render() {
       await call('approval.resolve', { id: view.id, approve: true, ignoreRisk: acked });
       device?.stop();
       next();
-    } catch (e) { if (!device?.failed(e)) showErr(err, e); }
+    } catch (e) {
+      if (!device?.failed(e)) showErr(err, e);
+      // a no on the device (or a request it can't take) has answered the site: the window moves on once you've read it
+      else if (/^ledger-(rejected|refused|too-large|cancelled)$/.test(e.code)) setTimeout(() => { if (current === view.id) next(); }, 2500);
+    }
   });
 
   mount(app, head(view), h('main', { class: 'screen approve' },

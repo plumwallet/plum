@@ -147,7 +147,9 @@ async function open(path, { width = 380, height = 600, answers = {}, hid = true 
   await p.setViewport({ width, height, deviceScaleFactor: 1 });
   p.errors = [];
   p.on('pageerror', (e) => p.errors.push(e.message));
-  p.on('console', (m) => { if (m.type() === 'error') p.errors.push(m.text()); });
+  p.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) p.errors.push(m.text()); });
+  // (the browser asks the local server for a favicon the extension never has)
+  p.on('response', (r) => { if (r.status() >= 400 && !r.url().endsWith('/favicon.ico')) p.errors.push(`${r.status()} for ${r.url().replace(BASE, '')}`); });
   opened.push(p);
   await p.goto(`${BASE}/${path}`, { waitUntil: 'load' });
   await p.waitForSelector('#app > :not(.boot)', { timeout: 15_000 });

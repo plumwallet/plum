@@ -170,10 +170,11 @@ function connectStep({ account = null, chains = ['sol', 'eth', 'btc'] } = {}) {
   });
   const device = deviceBox(null, {
     text: [
-      h('p', null, 'plug in your Ledger and unlock it. plum reads its addresses here; its keys never leave the device, and everything it signs you approve twice: in plum, then on the Ledger.'),
+      h('p', null, "plum reads your Ledger's addresses here. Its keys never leave the device, and everything it signs you approve twice: in plum, then on the Ledger."),
       h('p', { class: 'dim' }, 'plum opens each app on the device for you when the Ledger lets it; otherwise open it yourself when plum says so.'),
     ],
   });
+  device.paint({ state: 'idle', message: 'plug in your Ledger and unlock it, then read it here.' });
   const err = errLine();
   const next = h('button', { class: 'btn-go', type: 'button', dataset: { busyText: 'reading your ledger' } }, 'read my ledger ->');
   busyButton(next, async () => {
