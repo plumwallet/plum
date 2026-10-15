@@ -23,6 +23,7 @@ import * as E from './eth.js';
 import { EVM_NETWORKS, MAINNET, chainHex, networkById, networkByKey, unsupportedChain } from './evm-chains.js';
 import { forgetSite, moveSite, siteNetwork } from './evm-site.js';
 import * as X from './evm-swap.js';
+import * as HW from './hw.js';
 import * as L from './lido.js';
 import { isMnemonic, newMnemonic, normalizeMnemonic } from './keys.js';
 import { pool } from './net.js';
@@ -260,6 +261,8 @@ function approval(req) {
     const id = newId();
     if (req.ctx?.closed) { reject(fail('the page closed')); return; }
     const entry = { chain: 'sol', ...req, id, created: Date.now(), resolve, reject, previews: null };
+    // a no while a Ledger is working on it (in plum, the page closing, the site disconnecting) stops the device too
+    entry.reject = (e) => { if (entry.working) { entry.cancelled = true; HW.cancel(); } reject(e); };
     pending.set(id, entry);
     req.ctx?.owned.add(id);
     showApproval().catch((e) => { pending.delete(id); reject(e); });
@@ -304,6 +307,7 @@ async function approvalView() {
     const now = await siteNetwork(r.origin);
     if (now !== n) view.evmNet.siteNow = now.title;
   }
+  view.ledger = await HW.approvalNote(r);
   return view;
 }
 
@@ -359,6 +363,7 @@ async function approvalResolve({ id, approve, ignoreRisk }) {
     if (!ignoreRisk && (!p || p.warnings?.some((w) => w.level === 'danger'))) throw fail('this transaction carries a danger: tick "i understand" to send it anyway');
   }
   if (r.chain === 'btc') await btcSite.check(r, ignoreRisk);
+  if (await HW.signsFor(r)) return ledgerResolve(r);
   pending.delete(id);
   try {
     const result = await perform(r);
@@ -368,6 +373,30 @@ async function approvalResolve({ id, approve, ignoreRisk }) {
     r.reject(fail(e.message));
     throw e;
   }
+}
+
+/**
+ * Approving a request a Ledger signs: it stays first in the queue until the device has answered, so a device that
+ * wasn't ready (unplugged, locked, showing another app) can be tried again from the same window. A no on the device
+ * answers the site with a no; one in plum (or the page going away) stops the device.
+ */
+async function ledgerResolve(r) {
+  if (r.working) throw fail('your Ledger is already working on this request');
+  r.working = true;
+  let result;
+  try {
+    result = await perform(r);
+  } catch (e) {
+    r.working = false;
+    if (r.cancelled) throw fail('you rejected it in plum');
+    if (!e.retry) { pending.delete(r.id); r.reject(e.state === 'rejected' ? rejected() : fail(e.message)); }
+    throw e;
+  }
+  r.working = false;
+  pending.delete(r.id);
+  if (r.cancelled) throw fail('you rejected it in plum');
+  r.resolve(result);
+  return { done: true, result: r.kind === 'signAndSend' || r.kind === 'evmTx' ? result : undefined };
 }
 
 /** What approving does, per kind. */
@@ -385,13 +414,17 @@ async function perform(r) {
   if (r.kind === 'signAndSend') {
     const { rpc, network } = await net(r.network);
     const sigs = [];
-    for (const b64 of r.txs) {
-      const signed = await signTx(b64decode(b64), r.account);
-      sigs.push(await sendSigned(signed, { rpc, network, options: r.options }));
-    }
+    // every one signed before any is sent (a Ledger can stop halfway: then nothing has gone out)
+    const signed = [];
+    for (const b64 of r.txs) signed.push(await signTx(b64decode(b64), r.account));
+    for (const s of signed) sigs.push(await sendSigned(s, { rpc, network, options: r.options }));
     return sigs;
   }
   if (r.kind === 'message') {
+    if (await HW.owns('sol', r.account)) {
+      const { signature, signed } = await HW.signSolMessage(r.account, r.messageBytes);
+      return { signature: b64encode(signature), signedMessage: b64encode(signed) };
+    }
     const sig = await W.signSolAs(r.account, r.messageBytes);
     return { signature: b64encode(sig), signedMessage: b64encode(r.messageBytes) };
   }
@@ -404,6 +437,8 @@ async function perform(r) {
     await trust(r.origin, r.account, 'eth');
     return [r.account];
   }
+  if (r.kind === 'evmMessage' && (await HW.owns('eth', r.account))) return HW.signEthMessage(r.account, r.messageBytes);
+  if (r.kind === 'evmTyped' && (await HW.owns('eth', r.account))) return HW.signEthTyped(r.account, r.typed);
   if (r.kind === 'evmMessage') return E.sigHex(await W.signEthAs(r.account, E.personalDigest(r.messageBytes)));
   if (r.kind === 'evmTyped') return E.sigHex(await W.signEthAs(r.account, E.typedDigest(r.typed)));
   if (r.kind === 'evmTx') return sendEth(r.account, r.call, r.signWith, networkByKey(r.network) ?? MAINNET);
@@ -412,7 +447,7 @@ async function perform(r) {
 
 async function signTx(bytes, address) {
   const t = readTx(bytes);
-  const sig = await W.signSolAs(address, t.message);
+  const sig = (await HW.owns('sol', address)) ? await HW.signSolTx(address, t.message) : await W.signSolAs(address, t.message);
   return withSignature(t.bytes, address, sig);
 }
 
@@ -628,11 +663,13 @@ async function handleRequest(origin, method, params, ctx) {
     if (typeof p.message !== 'string' || p.message.length > MAX_MESSAGE * 1.4) throw fail(`a message can be ${MAX_MESSAGE / 1024} KB at most`);
     const bytes = b64decode(p.message);
     if (!bytes.length || bytes.length > MAX_MESSAGE) throw fail(`a message can be ${MAX_MESSAGE / 1024} KB at most`);
-    const refusal = messageRefusal(bytes);
+    const refusal = messageRefusal(bytes) ?? (await HW.refusal('sol', a, 'message', bytes));
     if (refusal) throw fail(refusal);
     return approval({ ...base, kind: 'message', messageBytes: bytes, messageView: messageView(bytes), network: (await getSettings()).network });
   }
   if (method === 'signIn') {
+    const no = await HW.refusal('sol', a, 'signIn');
+    if (no) throw fail(no);
     const view = signInMessage(p.input, { origin, address: a });
     return approval({ ...base, kind: 'signIn', signInView: view, network: (await getSettings()).network });
   }
@@ -871,7 +908,7 @@ async function signAndSendEth(from, tx) {
   const net = networkById(tx.chainId ?? MAINNET.id);
   if (!net) throw fail("plum doesn't work on that network; nothing was signed");
   const digest = E.txDigest(tx);
-  const sig = await W.signEthAs(from, digest);
+  const sig = (await HW.owns('eth', from)) ? await HW.signEthTx(from, tx) : await W.signEthAs(from, digest);
   if (E.signerOf(digest, sig) !== from) throw fail('plum signed with the wrong key; nothing was sent');
   const raw = E.signedTx(tx, sig);
   const hash = await E.sendRaw(raw, await sendUrls(net));
@@ -1300,7 +1337,8 @@ async function submitPrepared({ id }) {
     const net = networkById(p.tx.chainId ?? MAINNET.id) ?? MAINNET;
     out = { signature: hash, chain: 'eth', net: net.key, explorer: E.explorerTx(hash, net), explorerName: net.explorerName };
   } else if (p.chain === 'btc') {
-    const { raw, txid } = await B.signSpend(p.plan, p.owner, (address, digests) => W.signBitcoinAs(address, digests));
+    const ledger = await HW.owns('btc', p.from);
+    const { raw, txid } = await B.signSpend(p.plan, p.owner, (address, digests) => (ledger ? HW.signBtc(address, p.plan, digests) : W.signBitcoinAs(address, digests)));
     await B.broadcast(raw, txid);
     sent.set(txid, { chain: 'btc', status: 'sent', at: Date.now() });
     followOther('btc', txid).catch(() => {});
@@ -1719,6 +1757,7 @@ const ui = {
   },
   'approval.show': async () => { if (pending.size) await showApproval({ focus: true }); return pending.size; },
   'approval.done': approvalDone,
+  ...HW.uiMethods({ usage, serial, changed }),
 };
 
 function fromPlum(sender) {

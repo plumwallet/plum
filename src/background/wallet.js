@@ -18,6 +18,8 @@ import { changePassword as rewrap, createVault, passwordOpens, readVault, unlock
 export const LOCK_ALARM = 'plum-autolock';
 /** The account private keys go into. */
 export const KEYS = 'keys';
+/** The kind (and wallet scheme) of an account that's a Ledger. */
+export const LEDGER = 'ledger';
 /** The account a wallet from before accounts held phrases (plum 0.1.5 and older) moves into. */
 const FIRST = 'a1';
 const SCHEMA = 2;
@@ -28,12 +30,16 @@ const fail = (message, code) => Object.assign(new Error(message), code ? { code 
 
 /* ------------------------------------------------------------ what's on disk, in the clear
  *
- *  accounts  [{ id, kind: 'phrase' | 'keys', name, words: 12 | 24 | null, backedUp, created }]
- *  wallets   [{ id, account, name, icon, scheme: 'bip44change' | 'bip44' | 'cli' | null, index,
+ *  accounts  [{ id, kind: 'phrase' | 'keys' | 'ledger', name, words: 12 | 24 | null, backedUp, created }]
+ *  wallets   [{ id, account, name, icon, scheme: 'bip44change' | 'bip44' | 'cli' | 'ledger' | null, index,
  *               chains: { sol?: { address, path }, eth?: {...}, btc?: { address, path, publicKey,
  *               taproot: { address, path, publicKey } } } }]
  *  active    the wallet you're in
- *  vault     sealed: { v: 2, phrases: { accountId: mnemonic }, keys: { walletId: { chain, secret } } }
+ *  vault     sealed: { v: 2, phrases: { accountId: mnemonic }, keys: { walletId: { chain, secret } },
+ *                      ledgers: { walletId: { account, layout, index, chains: { sol?: { address, path }, ... } } } }
+ *
+ * A Ledger's wallets have no secret here (their keys never leave the device): the vault keeps their addresses and
+ * paths, so they're checked at each unlock like every other wallet.
  *
  * Addresses are kept in the clear so sites can see the ones you connected while plum is locked; every one is checked
  * against the vault at each unlock.
@@ -453,23 +459,32 @@ async function afterRemoval(rest) {
 }
 
 /** Take a wallet out of plum. A phrase's wallet is only hidden ("+ new wallet" brings it back); an imported key is
- * erased from the vault (export it first). */
+ * erased from the vault (export it first); a Ledger's is forgotten (the device can always add it again). */
 export async function removeWallet(id) {
   const list = await wallets();
   const w = list.find((x) => x.id === id);
   if (!w) throw fail('no such wallet');
   if (list.length <= 1) throw fail("that's your only wallet");
-  if (w.account !== KEYS && list.filter((x) => x.account === w.account).length <= 1) throw fail("that's this account's only wallet: remove the account instead");
+  const ledger = w.scheme === LEDGER;
+  if (w.account !== KEYS && !ledger && list.filter((x) => x.account === w.account).length <= 1) throw fail("that's this account's only wallet: remove the account instead");
   if (w.account === KEYS) {
     const o = await requireOpen();
     const keys = { ...o.data.keys };
     delete keys[id];
     await save({ ...o.data, keys });
   }
+  if (ledger) {
+    const o = await requireOpen();
+    const ledgers = { ...(o.data.ledgers ?? {}) };
+    delete ledgers[id];
+    await save({ ...o.data, ledgers });
+  }
   for (const chain of CHAINS) { const s = derived.get(`${id}:${chain}`); if (s) { wipe(s); derived.delete(`${id}:${chain}`); } }
   const rest = list.filter((x) => x.id !== id);
   const all = await accounts();
-  await local.set({ wallets: rest, accounts: rest.some((x) => x.account === KEYS) ? all : all.filter((a) => a.id !== KEYS) });
+  // an account left with no wallets goes too (imported keys, a Ledger)
+  const kept = (rest.some((x) => x.account === KEYS) ? all : all.filter((a) => a.id !== KEYS)).filter((a) => a.kind !== LEDGER || rest.some((x) => x.account === a.id));
+  await local.set({ wallets: rest, accounts: kept });
   await afterRemoval(rest);
 }
 
@@ -485,7 +500,8 @@ export async function removeAccount(id) {
   const phrases = { ...o.data.phrases };
   delete phrases[id];
   const keys = Object.fromEntries(Object.entries(o.data.keys).filter(([wid]) => rest.some((w) => w.id === wid)));
-  await save({ ...o.data, phrases, keys });
+  const ledgers = Object.fromEntries(Object.entries(o.data.ledgers ?? {}).filter(([wid]) => rest.some((w) => w.id === wid)));
+  await save({ ...o.data, phrases, keys, ledgers });
   const s = seeds.get(id);
   if (s) { wipe(s); seeds.delete(id); }
   for (const w of list.filter((x) => x.account === id)) for (const chain of CHAINS) { const k = derived.get(`${w.id}:${chain}`); if (k) { wipe(k); derived.delete(`${w.id}:${chain}`); } }
@@ -532,6 +548,7 @@ async function secretOf(w, chain, { trust = false } = {}) {
   const o = await requireOpen();
   const c = w.chains[chain];
   if (!c) throw fail(`this wallet has no ${chain} address`);
+  if (w.scheme === LEDGER) throw fail("this wallet's keys are on your Ledger: plum never holds them");
   if (w.account === KEYS) {
     const k = Object.hasOwn(o.data.keys, w.id) ? o.data.keys[w.id] : undefined;
     if (!k || k.chain !== chain) throw fail("this wallet's key is missing from the vault");
@@ -574,6 +591,15 @@ async function verifyWallets() {
     const name = cleanName(w.name) || 'wallet';
     const icon = cleanIcon(w.icon);
     if (name !== w.name || icon !== (w.icon ?? null)) { w = { ...w, name, icon }; changed = true; }
+    // a Ledger's wallet: its account, addresses and paths are the vault's, whatever the disk says
+    const hw = o.data.ledgers && Object.hasOwn(o.data.ledgers, w.id) ? o.data.ledgers[w.id] : null;
+    if (hw || w.scheme === LEDGER) {
+      if (!hw) { changed = true; continue; }
+      const real = ledgerChains(hw);
+      if (w.scheme !== LEDGER || w.account !== hw.account || w.index !== hw.index || JSON.stringify(real) !== JSON.stringify(w.chains)) changed = true;
+      fixed.push({ ...w, account: hw.account, scheme: LEDGER, index: hw.index, layout: hw.layout, chains: real });
+      continue;
+    }
     const chains = {};
     const want = new Set(Object.keys(w.chains ?? {}));
     // a wallet from before: the chains its derivation has that it doesn't show yet
@@ -594,7 +620,8 @@ async function verifyWallets() {
   // the vault is the truth: every phrase in it is an account you can see, with at least its wallet 1, so a list edited
   // on disk can't hide one (importing it again would be refused: it's already in the vault)
   const stored = await local.get('accounts', []);
-  let accts = Array.isArray(stored) ? stored.filter((a) => a && typeof a.id === 'string' && (a.kind !== 'phrase' || Object.hasOwn(o.data.phrases, a.id))) : [];
+  const ledgerRecords = Object.entries(o.data.ledgers ?? {});
+  let accts = Array.isArray(stored) ? stored.filter((a) => a && typeof a.id === 'string' && (a.kind !== 'phrase' || Object.hasOwn(o.data.phrases, a.id)) && (a.kind !== LEDGER || ledgerRecords.some(([, r]) => r.account === a.id))) : [];
   let accountsChanged = accts.length !== (Array.isArray(stored) ? stored.length : -1);
   for (const [id, phrase] of Object.entries(o.data.phrases)) {
     if (!accts.some((a) => a.id === id)) {
@@ -605,6 +632,19 @@ async function verifyWallets() {
     }
     if (!fixed.some((w) => w.account === id)) {
       fixed.push(...walletsFor(seedFor(o, id), id, [{ scheme: 'bip44change', index: 0 }], { names: ['wallet 1'], icons: iconsFor(1, null, fixed.map((w) => w.icon)) }));
+      changed = true;
+    }
+  }
+  // and every Ledger wallet in it, with its account
+  for (const [wid, hw] of ledgerRecords) {
+    if (!accts.some((a) => a.id === hw.account)) {
+      const account = { id: hw.account, kind: LEDGER, name: ledgerName(accts), words: null, backedUp: true, created: Date.now() };
+      const at = accts.findIndex((a) => a.kind === 'keys');
+      accts = at < 0 ? [...accts, account] : [...accts.slice(0, at), account, ...accts.slice(at)];
+      accountsChanged = true;
+    }
+    if (!fixed.some((w) => w.id === wid)) {
+      fixed.push({ id: wid, account: hw.account, name: nextName(fixed.filter((w) => w.account === hw.account).map((w) => w.name), 'wallet'), icon: iconsFor(1, null, fixed.map((w) => w.icon))[0], scheme: LEDGER, index: hw.index, layout: hw.layout, chains: ledgerChains(hw) });
       changed = true;
     }
   }
@@ -711,6 +751,90 @@ export async function reset() {
   await lock();
   await local.clear();
   await session.clear();
+}
+
+/* ------------------------------------------------------------ Ledger wallets */
+
+// the paths a Ledger's wallets may sit on: plum's own (as a phrase's wallets), and Ledger Live's for Solana and Ethereum
+const LEDGER_PATHS = {
+  sol: /^m\/44'\/501'\/\d{1,4}'(\/0')?$/,
+  eth: /^m\/44'\/60'\/(0'\/0\/\d{1,4}|\d{1,4}'\/0\/0)$/,
+  btc: /^m\/84'\/0'\/0'\/0\/\d{1,4}$/,
+};
+
+/** What goes on disk of a Ledger wallet's chains: the address and path of each (the rest stays in the vault). */
+function ledgerChains(hw) {
+  return Object.fromEntries(Object.entries(hw.chains ?? {}).filter(([c]) => CHAINS.includes(c)).map(([c, v]) => [c, { address: v.address, path: v.path }]));
+}
+
+/** A new Ledger account's name: "ledger", then "ledger 2", "ledger 3"... */
+function ledgerName(accts) {
+  const taken = accts.map((a) => a.name);
+  if (!taken.includes('ledger')) return 'ledger';
+  let n = 2;
+  while (taken.includes(`ledger ${n}`)) n++;
+  return `ledger ${n}`;
+}
+
+/** A wallet a Ledger gave (from ledger.js, never from a page), checked: chains plum knows, on the paths it uses. */
+function checkFound(f) {
+  if (!f || typeof f !== 'object' || !['plum', 'live'].includes(f.layout) || !Number.isInteger(f.index) || f.index < 0 || f.index >= 10_000) throw fail('one of those wallets is malformed');
+  const chains = Object.entries(f.chains ?? {});
+  if (!chains.length || chains.some(([c, v]) => !CHAINS.includes(c) || typeof v?.address !== 'string' || !LEDGER_PATHS[c].test(v.path ?? ''))) throw fail('one of those wallets is malformed');
+  return f;
+}
+
+/**
+ * Wallets from a Ledger, into the open vault: a new Ledger account holding them, or more wallets in one you have
+ * (`account`). `found`: [{ layout: 'plum' | 'live', index, chains: { sol?: { address, path }, eth?: {...},
+ * btc?: { address, path, xpub, fingerprint } } }], as the device gave them.
+ */
+export async function addLedger({ account = null, found, name, icon }) {
+  const o = await requireOpen();
+  if (!Array.isArray(found) || !found.length) throw fail('pick at least one wallet');
+  if (found.length > 50) throw fail('pick at most 50 wallets at a time');
+  found.forEach(checkFound);
+  const all = await accounts();
+  const existing = await wallets();
+  const acct = account ? all.find((a) => a.id === account && a.kind === LEDGER) : null;
+  if (account && !acct) throw fail('no such Ledger account');
+  const known = new Set(existing.flatMap((w) => Object.values(w.chains).map((c) => c.address)));
+  if (found.some((f) => Object.values(f.chains).some((c) => known.has(c.address)))) throw fail('one of those wallets is already in plum');
+  const accountId = acct?.id ?? newId();
+  const taken = existing.filter((w) => w.account === accountId).map((w) => w.name);
+  const typed = cleanName(name, 20);
+  const icons = iconsFor(found.length, icon, existing.map((w) => w.icon));
+  const list = found.map((f, i) => {
+    let n = typed ? (i === 0 ? typed : `${typed.slice(0, 20)} ${i + 1}`) : f.layout === 'live' ? `live ${f.index + 1}` : `wallet ${f.index + 1}`;
+    if (taken.includes(n)) n = nextName(taken, typed || 'wallet');
+    taken.push(n);
+    return { id: newId(), account: accountId, name: n, icon: icons[i], scheme: LEDGER, index: f.index, layout: f.layout, chains: ledgerChains(f) };
+  });
+  const ledgers = { ...(o.data.ledgers ?? {}) };
+  list.forEach((w, i) => { ledgers[w.id] = { account: accountId, layout: found[i].layout, index: found[i].index, chains: found[i].chains }; });
+  await save({ ...o.data, ledgers });
+  const ledgerAccount = acct ?? { id: accountId, kind: LEDGER, name: ledgerName(all), words: null, backedUp: true, created: Date.now() };
+  // a Ledger goes after the recovery phrases, ahead of imported keys
+  const at = all.findIndex((a) => a.kind === 'keys');
+  const nextAccounts = acct ? all : at < 0 ? [...all, ledgerAccount] : [...all.slice(0, at), ledgerAccount, ...all.slice(at)];
+  await local.set({ accounts: nextAccounts, wallets: [...existing, ...list], active: list[0].id });
+  return { account: ledgerAccount, wallets: list };
+}
+
+/** A Ledger wallet's own record on one chain, from the vault: { wallet, address, path, (Bitcoin) xpub, fingerprint }. */
+export async function ledgerOf(chain, address) {
+  const o = await requireOpen();
+  const w = await walletFor(chain, address);
+  const hw = o.data.ledgers && Object.hasOwn(o.data.ledgers, w.id) ? o.data.ledgers[w.id] : null;
+  const c = hw?.chains?.[chain];
+  if (!c || c.address !== address || !LEDGER_PATHS[chain]?.test(c.path)) throw fail('this Ledger wallet is missing from the vault: remove it and add it again from your Ledger');
+  return { wallet: w, ...c, index: hw.index };
+}
+
+/** The other Ledger wallets of an account, from the vault (to tell its device by the addresses it gave). */
+export async function ledgerRecords(accountId) {
+  const o = await requireOpen();
+  return Object.entries(o.data.ledgers ?? {}).filter(([, r]) => r.account === accountId).map(([id, r]) => ({ id, ...r }));
 }
 
 /* ------------------------------------------------------------ what a phrase holds, for the import picker */

@@ -13,8 +13,10 @@ const STATES_TO_WAIT = new Set(['connect', 'locked', 'open-app', 'wrong-app', 't
 
 const defaultOpener = () => HidLink.open();
 let opener = defaultOpener;
-/** Tests (and the emulator) give their own device here. */
+let waitMs = WAIT_MS;
+/** Tests (and the emulator) give their own device here, and a shorter wait. */
 export function _setOpener(fn) { opener = fn ?? defaultOpener; }
+export function _setWait(ms) { waitMs = ms ?? WAIT_MS; }
 
 let current = { state: 'idle', message: '', app: null, model: null, at: 0 };
 let job = null;
@@ -43,7 +45,7 @@ const quick = (link, ms) => ({ exchange: (a) => link.exchange(a, { timeout: ms }
  * that the device is now waiting for you to check and approve. While there's no device, it's locked or another app is
  * open, this waits (up to WAIT_MS), saying so in status(). Errors from `fn` (a no on the device, a bad answer) end it.
  */
-export async function use(app, fn, { wait = WAIT_MS } = {}) {
+export async function use(app, fn, { wait = waitMs } = {}) {
   if (job) throw new LedgerError('busy', 'your Ledger is busy with another request: answer that one first');
   const me = { cancelled: false, link: null, quit: false, open: false };
   job = me;
