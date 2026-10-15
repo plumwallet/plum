@@ -220,6 +220,20 @@ test('a v1 message sent to signMessage is refused before you see it', async () =
   }
 });
 
+test('history lists v1 transactions like any other (getSignaturesForAddress has no version to ask for)', async () => {
+  const [real] = JSON.parse(readFileSync(new URL('../fixtures/v1-mainnet.json', import.meta.url), 'utf8'));
+  ctx.chain.handlers.getSignaturesForAddress = () => [{ signature: real.signature, slot: real.slot, blockTime: 1_791_000_000, err: null, confirmationStatus: 'finalized' }];
+  try {
+    const { items, errors } = await ctx.ok('activity');
+    assert.equal(errors.sol, undefined, 'Solana answered (the other chains have no network here)');
+    const it = items.find((x) => x.id === real.signature);
+    assert.equal(it.ok, true);
+    assert.match(it.explorer, new RegExp(`/tx/${real.signature}$`));
+  } finally {
+    delete ctx.chain.handlers.getSignaturesForAddress;
+  }
+});
+
 test('plum tells sites it takes v1 transactions', () => {
   const src = readFileSync(new URL('../../src/content/inject.js', import.meta.url), 'utf8');
   assert.equal((src.match(/supportedTransactionVersions: \['legacy', 0, 1\]/g) ?? []).length, 2);
