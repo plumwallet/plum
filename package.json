@@ -1,7 +1,7 @@
 {
   "name": "plum-wallet",
   "private": true,
-  "version": "0.1.6",
+  "version": "0.1.7",
   "type": "module",
   "description": "Self-custodial Solana, Ethereum and Bitcoin wallet for Firefox and Chromium browsers.",
   "engines": {

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Plum",
   "short_name": "Plum",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "A private Solana, Ethereum and Bitcoin wallet in typed ASCII. Keys sealed on this computer; every request simulated before you sign.",
   "browser_specific_settings": {
     "gecko": {

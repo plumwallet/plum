@@ -37,7 +37,7 @@ import * as S from './stake.js';
 import { AUTOLOCK_CHOICES, getSettings, local, session, setSettings } from './store.js';
 import * as W from './wallet.js';
 
-export const VERSION = '0.1.6';
+export const VERSION = '0.1.7';
 const PHISH_ALARM = 'plum-phish';
 const RENT_EXEMPT_EMPTY = 890_880n;
 const MAX_MESSAGE = 16 * 1024;
