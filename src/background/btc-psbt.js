@@ -171,8 +171,9 @@ const short = (s) => (s.length > 16 ? `${s.slice(0, 8)}..${s.slice(-6)}` : s);
 /** Where an input's inscriptions land, by ordinal theory: sats go first in, first out, so an inscription at offset k of
  * input i sits at (the inputs before it + k) and lands in the output covering that sat, or in the fee past the last. */
 function whereInscriptionsGo(x, inputs, outputs, fixed) {
-  if (!fixed) return 'signing lets them leave your wallet with this coin';
-  if (inputs.slice(0, x.index).some((y) => y.value == null)) return 'signing lets them leave with this coin (plum can\'t follow them: an earlier input\'s amount is unknown)';
+  const them = x.holds.inscriptions.length === 1 ? 'it' : 'them';
+  if (!fixed) return `signing lets ${them} leave your wallet with this coin`;
+  if (inputs.slice(0, x.index).some((y) => y.value == null)) return `signing lets ${them} leave with this coin (plum can't follow ${them}: an earlier input's amount is unknown)`;
   const before = sum(inputs.slice(0, x.index).map((y) => y.value));
   const where = x.holds.inscriptions.map((n) => {
     if (n.offset == null) return "leaves with this coin (plum couldn't tell where in the coin it sits, so not where it lands)";

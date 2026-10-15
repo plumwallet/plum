@@ -45,11 +45,13 @@ export function btcBody(view) {
   return [];
 }
 
-/** One input or output, as a line: its number, amount, whose, and (for an input) what plum does with it. */
+/** One input or output: its number and amount, then (quieter) whose it is and, for an input, what plum does with it. */
 function ioLine(x, input) {
-  const who = x.mine ? (x.mine === 'p2tr' ? 'yours (bc1p)' : 'yours (bc1q)') : x.kind === 'runestone' ? 'runestone (runes data)' : x.kind === 'data' ? 'data (OP_RETURN)' : short(x.address ?? 'a script', 6);
-  const what = input ? (x.sign ? `plum signs it, ${SIGHASH[x.sighash] ?? x.sighash}` : x.signed ? 'signed by someone else' : x.mine ? 'yours, not signed now' : 'not signed yet') : null;
-  return kv(`${input ? 'in' : 'out'} ${x.index}`, [x.value != null ? btc(x.value) : '? BTC', `  ${who}`, what ? `  ${what}` : ''].join(''), x.mine ? 'good' : '');
+  const who = x.mine ? (x.mine === 'p2tr' ? 'your bc1p' : 'your bc1q') : x.kind === 'runestone' ? 'a runestone (runes data)' : x.kind === 'data' ? 'data (OP_RETURN)' : short(x.address ?? 'a script', 6);
+  const what = input ? (x.sign ? `plum signs it (${SIGHASH[x.sighash] ?? x.sighash})` : x.signed ? 'already signed by someone else' : x.mine ? 'not signed now' : 'not signed yet') : null;
+  return h('div', { class: 'io' },
+    kv(`${input ? 'in' : 'out'} ${x.index}`, x.value != null ? btc(x.value) : '? BTC', x.mine ? 'good' : ''),
+    h('p', { class: x.mine ? 't-go' : 'dim' }, what ? `${who}, ${what}` : who));
 }
 
 /** What a PSBT does: computed by the background against the chain (btc-psbt.js). */
@@ -57,7 +59,7 @@ function psbtPreview(p) {
   const fixed = p.fixed;
   const side = p.checked ? chip('checked on chain', 'green') : chip('not checked', 'hot');
   return h('div', { class: 'preview' },
-    box(fixed ? 'what changes' : 'what your signature fixes', { tone: 'soft', side },
+    box(fixed ? 'what changes' : 'your part', { tone: 'soft', side },
       BigInt(p.leaves) > 0n ? deltaLine(-BigInt(p.leaves), 8, 'BTC leaves your wallet') : null,
       BigInt(p.arrives) > 0n ? deltaLine(BigInt(p.arrives), 8, fixed ? 'BTC comes back to you' : 'BTC paid to you') : null,
       fixed ? h('p', { class: BigInt(p.net) < 0n ? 't-red' : 't-go' }, `net: ${BigInt(p.net) < 0n ? '' : '+'}${btc(p.net)}`) : h('p', { class: 'dim' }, 'the rest of the transaction can still change after you sign')),
@@ -90,6 +92,6 @@ function sendPreview(p) {
 
 /** The preview of a Bitcoin request, or why plum won't sign it. */
 export function btcPreview(p) {
-  if (p.error) return h('div', { class: 'note err lvl-danger' }, `plum won't sign this: ${p.error}`);
+  if (p.error) return h('div', { class: 'note err lvl-danger' }, p.kind === 'psbt' ? p.error : `plum can't make this send: ${p.error}`);
   return p.kind === 'psbt' ? psbtPreview(p) : sendPreview(p);
 }

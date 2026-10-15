@@ -292,7 +292,7 @@ function btcPreviewBlock(p, { extra = [] } = {}) {
     h('div', { class: 'kvs' },
       kv('fee rate', `${p.feeRate} sat/vB · ${p.vsize} vB`),
       kv('signers', '1 (you)', 'good'),
-      kv('coins spent', String(p.inputs)),
+      kv('coins spent', p.taproot ? `${p.inputs} (${p.taproot} from bc1p)` : String(p.inputs)),
       kv('change back to you', BigInt(p.change) > 0n ? btc(p.change) : 'none')));
 }
 
