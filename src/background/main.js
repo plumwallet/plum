@@ -1242,7 +1242,9 @@ async function prepareStaking(params) {
 async function nftList({ chain = 'sol' } = {}) {
   if (chain === 'eth') {
     const { address } = await requireActive('eth');
-    return { chain, items: await N.listEth(address) };
+    // every Ethereum network's, each NFT marked with its own; one other than Ethereum that can't be read is noted
+    const per = await Promise.all(EVM_NETWORKS.map((n) => N.listEth(address, n).catch((e) => { if (n === MAINNET) throw e; return `${n.name}: ${e.message}`; })));
+    return { chain, items: per.filter(Array.isArray).flat(), errors: per.filter((x) => typeof x === 'string') };
   }
   const { address } = await requireActive('sol');
   const { rpc, network } = await net();
@@ -1262,9 +1264,11 @@ async function prepareNftSend(params) {
   return { id, chain: 'sol', preview, warnings: [...(await recipientChecks('sol', summary.to, me)), ...warnings], summary, network };
 }
 
-async function prepareEthNftSend({ contract, id, standard, amount = '1', to }) {
+async function prepareEthNftSend({ contract, id, standard, amount = '1', to, net: netKey = null }) {
+  // on the NFT's own network (Ethereum unless it says otherwise): read, simulated, signed and sent there
+  const n = networkByKey(netKey) ?? MAINNET;
   const { address: from } = await requireActive('eth');
-  const urls = await ethUrls();
+  const urls = await ethUrls(n);
   const token = E.checkAddress(String(contract ?? ''));
   const dest = E.checkAddress(String(to ?? ''));
   if (standard !== 'erc721' && standard !== 'erc1155') throw fail('pick an NFT');
@@ -1275,12 +1279,14 @@ async function prepareEthNftSend({ contract, id, standard, amount = '1', to }) {
   if (tokenId < 0n || count <= 0n) throw fail('pick an NFT');
   if (!(await N.ethHolds(urls, { contract: token, id: tokenId, standard, owner: from, amount: count }))) throw fail("this NFT isn't in this wallet any more");
   const call = { to: token, value: 0n, data: standard === 'erc721' ? N.erc721TransferData(from, dest, tokenId) : N.erc1155TransferData(from, dest, tokenId, count), gas: null };
-  const { signWith, ...preview } = await evmPreview(from, call);
+  const { signWith, ...preview } = await evmPreview(from, call, n);
   if (!signWith) throw fail("plum couldn't work out this transfer's gas and fee: try again");
   const nonce = BigInt(await E.ethRpc(urls, 'eth_getTransactionCount', [from, 'pending']));
-  const tx = { nonce, maxPriorityFeePerGas: signWith.fees.tip, maxFeePerGas: signWith.fees.maxFee, gas: signWith.gas, to: call.to, value: 0n, data: call.data };
+  const tx = { chainId: n.id, nonce, maxPriorityFeePerGas: signWith.fees.tip, maxFeePerGas: signWith.fees.maxFee, gas: signWith.gas, to: call.to, value: 0n, data: call.data };
   const prep = keep({ chain: 'eth', tx, from, recipient: dest });
-  return { id: prep, chain: 'eth', preview, warnings: await recipientChecks('eth', dest, from), summary: { standard, id: tokenId.toString(), contract: token, amount: count.toString(), to: dest } };
+  const warnings = await recipientChecks('eth', dest, from);
+  if (n !== MAINNET) warnings.push({ level: 'info', text: `this goes out on ${n.title}: check that whoever you send to uses ${n.title}` });
+  return { id: prep, chain: 'eth', net: n.key, netTitle: n.title, preview, warnings, summary: { standard, id: tokenId.toString(), contract: token, amount: count.toString(), to: dest } };
 }
 
 async function submitPrepared({ id }) {

@@ -47,7 +47,7 @@ function chainState(key) {
     ethCall: null,
     /** a hash -> receipt status ('0x1', '0x0', or null for not yet) */
     receipts: new Map(),
-    blockscout: { tokens: new Map(), txs: new Map() }, // owner (lowercase) -> token-balances items / transaction items
+    blockscout: { tokens: new Map(), txs: new Map(), nfts: new Map() }, // owner (lowercase) -> token-balances items / transaction items / nft items
   };
 }
 
@@ -153,6 +153,7 @@ export function fakeNet() {
       if ((m = /^\/api\/v2\/addresses\/([^/]+)\/token-balances$/.exec(u.pathname))) return reply(c.blockscout.tokens.get(lower(m[1])) ?? []);
       if ((m = /^\/api\/v2\/addresses\/([^/]+)\/transactions$/.exec(u.pathname))) return reply({ items: c.blockscout.txs.get(lower(m[1])) ?? [] });
       if ((m = /^\/api\/v2\/addresses\/([^/]+)\/token-transfers$/.exec(u.pathname))) return reply({ items: [] });
+      if ((m = /^\/api\/v2\/addresses\/([^/]+)\/nft$/.exec(u.pathname))) return reply({ items: c.blockscout.nfts.get(lower(m[1])) ?? [], next_page_params: null });
       if ((m = /^\/api\/v2\/tokens\/([^/]+)$/.exec(u.pathname))) {
         const t = c.tokens.get(lower(m[1]));
         return t ? reply({ symbol: t.symbol, name: t.name, exchange_rate: t.price ?? null, decimals: String(t.decimals) }) : reply({ message: 'not found' }, 404);

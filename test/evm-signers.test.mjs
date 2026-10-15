@@ -1,6 +1,6 @@
 // Every transaction plum builds on Ethereum, Base, Arbitrum and Polygon has exactly one signer, your wallet: sends of
 // each network's coin and of a token, a site's transaction on each network, a swap's approvals and the swap, and
-// Lido's stake, withdrawal request (and its approval) and claim. Each
+// Lido's stake, withdrawal request (and its approval) and claim, and NFTs sent on Base and Arbitrum. Each
 // raw transaction that reaches a network is taken apart here: one EIP-1559 transaction, for that network, with one
 // signature in it (the RLP list's last three fields: no second set, no EIP-7702 authorizations), recovering to the
 // wallet. And nothing reaches a network before you said yes.
@@ -166,5 +166,17 @@ test("Lido: the stake, the withdrawal request's exact approval and the request, 
     assert.equal(net.evm.ethereum.sent.length, seen.filter((x) => x.key === 'ethereum').length, 'nothing sent before you said yes');
     await ok('lido.submit', { id: prep.id });
     await everyNewTransaction('ethereum', kinds);
+  }
+});
+
+test('NFTs on the other networks: an ERC-721 on Base and an ERC-1155 on Arbitrum, one signer each', async () => {
+  const NFT = '0x9999999999999999999999999999999999999999';
+  net.evm.base.ethCall = ({ to, data }) => (lower(to) === lower(NFT) && data.startsWith('0x6352211e') ? pad(ETH_ME) : undefined);
+  net.evm.arbitrum.ethCall = ({ to, data }) => (lower(to) === lower(NFT) && data.startsWith('0x00fdd58e') ? word(4n) : undefined);
+  for (const [key, params] of [['base', { standard: 'erc721', id: '3' }], ['arbitrum', { standard: 'erc1155', id: '8', amount: '4' }]]) {
+    const prep = await ok('nfts.prepare', { chain: 'eth', net: key, contract: NFT, to: TO, ...params });
+    assert.equal(net.evm[key].sent.length, seen.filter((x) => x.key === key).length, 'nothing sent before you said yes');
+    await ok('nfts.submit', { id: prep.id });
+    await everyNewTransaction(key, [params.standard]);
   }
 });

@@ -70,7 +70,7 @@ test("the NFT list carries names and ids only: no picture, no link, no hidden te
 test('an Ethereum NFT list from Blockscout: no picture, no link, and Blockscout\'s scams left out', async () => {
   const orig = globalThis.fetch;
   globalThis.fetch = async (url, opts) => {
-    if (/\/addresses\/0x[0-9a-fA-F]{40}\/nft\?/.test(String(url))) {
+    if (/^https:\/\/eth\.blockscout\.com\/api\/v2\/addresses\/0x[0-9a-fA-F]{40}\/nft\?/.test(String(url))) {
       const items = [
         { id: '1', token_type: 'ERC-721', value: '1', image_url: 'https://tracker.example/p.png', metadata: { name: 'Gift', image: 'ipfs://x' }, token: { address_hash: '0x1111111111111111111111111111111111111111', name: 'Gifts', symbol: 'G', type: 'ERC-721', reputation: 'ok', icon_url: 'https://tracker.example/i.png' } },
         { id: '2', token_type: 'ERC-1155', value: '3', metadata: { name: 'Claim your airdrop' }, token: { address_hash: '0x2222222222222222222222222222222222222222', name: 'Airdrop', type: 'ERC-1155', reputation: 'scam' } },

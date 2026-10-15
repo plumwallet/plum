@@ -274,3 +274,41 @@ test('a phrase scan finds a wallet used only on Base, and calls one unknown when
     assert.equal(w2.chains.eth.used, null, "Polygon couldn't be asked, so wallet 2's Ethereum side is unknown, not unused");
   } finally { globalThis.fetch = real; }
 });
+
+test("NFTs on every network: listed from each network's Blockscout and marked with it; sent on their own network only", async () => {
+  const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+  const pad = (a) => `0x${a.slice(2).toLowerCase().padStart(64, '0')}`;
+  const item = (contract, id, name) => ({ id, token_type: 'ERC-721', value: '1', metadata: { name }, token: { address_hash: contract, name: 'Things', symbol: 'T', type: 'ERC-721', reputation: 'ok' } });
+  const BASE_NFT = '0x7777777777777777777777777777777777777777';
+  const POL_NFT = '0x8888888888888888888888888888888888888888';
+  net.evm.base.blockscout.nfts.set(lower(ETH_ME), [item(BASE_NFT, '5', 'a base thing')]);
+  net.evm.polygon.blockscout.nfts.set(lower(ETH_ME), [item(POL_NFT, '9', 'a polygon thing')]);
+  const r = await ok('nfts.list', { chain: 'eth' });
+  assert.deepEqual(r.items.map((n) => [n.name, n.net, n.network]), [['a base thing', 'base', 'base'], ['a polygon thing', 'polygon', 'pol']]);
+  assert.deepEqual(r.errors, []);
+  // the Polygon one: Polygon's contract says it's yours; it's simulated, signed and sent on Polygon
+  const pol = net.evm.polygon;
+  pol.balances.set(lower(ETH_ME), 10n ** 18n);
+  pol.ethCall = ({ to, data }) => (lower(to) === lower(POL_NFT) && data.startsWith('0x6352211e') ? pad(ETH_ME) : undefined);
+  pol.simulate = () => ({ status: '0x1', returnData: '0x', gasUsed: '0x15f90', logs: [{ address: lower(POL_NFT), topics: [TRANSFER, pad(ETH_ME), pad(TO), `0x${(9).toString(16).padStart(64, '0')}`], data: '0x' }] });
+  try {
+    const prep = await ok('nfts.prepare', { chain: 'eth', net: 'polygon', contract: POL_NFT, id: '9', standard: 'erc721', to: TO });
+    assert.deepEqual([prep.net, prep.preview.net.key], ['polygon', 'polygon']);
+    assert.ok(prep.warnings.some((w) => /goes out on Polygon/.test(w.text)));
+    assert.ok(prep.preview.warnings.some((w) => /an NFT leaves your wallet: #9/.test(w.text)));
+    await ok('nfts.submit', { id: prep.id });
+    const tx = parseTransaction(pol.sent.at(-1));
+    assert.deepEqual([tx.chainId, tx.to.toLowerCase(), tx.data.slice(0, 10)], [137, lower(POL_NFT), '0x42842e0e']);
+    assert.equal(await recoverTransactionAddress({ serializedTransaction: pol.sent.at(-1) }), ETH_ME);
+    // the same NFT asked for on Base: Base's contract doesn't say it's yours, so nothing is built
+    assert.match(await err('nfts.prepare', { chain: 'eth', net: 'base', contract: POL_NFT, id: '9', standard: 'erc721', to: TO }), /isn't in this wallet/);
+  } finally { pol.ethCall = null; pol.simulate = null; }
+  // a network whose Blockscout is down is named, and the others are still listed
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, o) => (/arbitrum\.blockscout/.test(String(url)) ? new Response('down', { status: 503 }) : real(url, o));
+  try {
+    const r2 = await ok('nfts.list', { chain: 'eth' });
+    assert.equal(r2.items.length, 2);
+    assert.match(r2.errors.join(' '), /^arbitrum: /);
+  } finally { globalThis.fetch = real; }
+});

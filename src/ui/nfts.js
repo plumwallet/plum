@@ -1,10 +1,11 @@
-// NFTs, in the popup: what the wallet holds on Solana and Ethereum, each NFT a typed card (its collection, its name, its
+// NFTs, in the popup: what the wallet holds on Solana and Ethereum (and Base, Arbitrum and Polygon), each NFT a typed card (its collection, its name, its
 // id: never its picture, which would tell the picture's host your IP), and sending one: the background builds the
 // transfer its standard takes and simulates it, and it's reviewed here like a send.
 import { short } from '../shared/format.js';
 import { call } from './api.js';
 import { active, errLine, field, forget, go, redraw, screen, show, showErr } from './app.js';
 import { busyButton, h } from './dom.js';
+import { netOf } from './evm.js';
 import { CHAIN, actions, addressBlock, box, chainsOf, kv, previewBlock, seg, spinner } from './parts.js';
 
 const STANDARD = { legacy: 'Metaplex NFT', programmable: 'programmable NFT', core: 'Core asset', compressed: 'compressed NFT', erc721: 'ERC-721', erc1155: 'ERC-1155' };
@@ -19,6 +20,10 @@ const idLine = (n) => (n.chain === 'eth' ? `#${n.id.length > 12 ? `${n.id.slice(
 /** An NFT's name, or its id when it has none. */
 const nameOf = (n) => n.name ?? (n.chain === 'eth' ? `#${n.id.length > 16 ? `${n.id.slice(0, 14)}..` : n.id}` : short(n.id, 6));
 const collectionOf = (n) => n.collection?.name ?? (n.collection ? short(n.collection.id, 4) : 'no collection');
+/** Where an NFT is: its chain, or for an Ethereum one, its network (Base, Arbitrum, Polygon or Ethereum itself). */
+const whereOf = (n) => (n.chain === 'eth' && n.net ? netOf(n.net).name : CHAIN[n.chain].name);
+/** Where the list is: Ethereum's covers its other networks too. */
+const listedOn = (c) => (c === 'eth' ? 'ethereum, base, arbitrum and polygon' : CHAIN[c].name);
 
 /* ------------------------------------------------------------ the list */
 
@@ -40,9 +45,9 @@ export async function nftsScreen(chain = null) {
   const paint = (r) => {
     grid.replaceChildren(...r.items.map((n) => card(n)));
     const count = r.items.length;
-    status.replaceChildren(h('span', { class: 'dim' }, count ? `${count} ${count === 1 ? 'NFT' : 'NFTs'} on ${CHAIN[on].name}` : `no NFTs on ${CHAIN[on].name} yet`));
-    note.hidden = r.via !== 'accounts';
-    note.textContent = "your RPC can't list Core or compressed NFTs (it has no DAS): these are your Metaplex NFTs only.";
+    status.replaceChildren(h('span', { class: 'dim' }, count ? `${count} ${count === 1 ? 'NFT' : 'NFTs'} on ${listedOn(on)}` : `no NFTs on ${listedOn(on)} yet`));
+    note.hidden = r.via !== 'accounts' && !r.errors?.length;
+    note.textContent = r.errors?.length ? `plum couldn't read these, so their NFTs aren't listed: ${r.errors.join(' · ')}` : "your RPC can't list Core or compressed NFTs (it has no DAS): these are your Metaplex NFTs only.";
   };
   const load = async () => {
     again.disabled = true;
@@ -69,7 +74,7 @@ function card(n) {
   return h('button', { class: 'nft-card', type: 'button', title: `${nameOf(n)}: open it`, onclick: () => nftScreen(n) },
     h('span', { class: `nft-col ${unverified ? 'unv' : ''}` }, collectionOf(n)),
     h('b', { class: 'nft-name' }, nameOf(n)),
-    h('span', { class: 'nft-id' }, idLine(n), n.amount && n.amount !== '1' ? ` x${n.amount}` : ''));
+    h('span', { class: 'nft-id' }, idLine(n), n.amount && n.amount !== '1' ? ` x${n.amount}` : '', n.net && n.net !== 'ethereum' ? h('span', { class: 'chain-tag' }, ` ${n.network}`) : null));
 }
 
 /* ------------------------------------------------------------ one NFT, and sending it */
@@ -84,7 +89,7 @@ function nftScreen(n, to = '') {
     const asked = toIn.value.trim();
     try {
       const prep = await call('nfts.prepare', n.chain === 'eth'
-        ? { chain: 'eth', contract: n.contract, id: n.id, standard: n.standard, amount: n.amount ?? '1', to: asked }
+        ? { chain: 'eth', net: n.net ?? null, contract: n.contract, id: n.id, standard: n.standard, amount: n.amount ?? '1', to: asked }
         : { chain: 'sol', id: n.id, to: asked });
       review(prep, n, () => nftScreen(n, asked));
     } catch (e) { showErr(err, e); }
@@ -96,7 +101,7 @@ function nftScreen(n, to = '') {
       kv('collection', collectionOf(n)),
       unverified ? kv('collection checked', 'no', 'warn') : null,
       kv('standard', STANDARD[n.standard] ?? n.standard),
-      kv('on', CHAIN[n.chain].name),
+      kv('on', whereOf(n)),
       n.chain === 'eth' ? kv('token id', n.id.length > 24 ? `${n.id.slice(0, 22)}..` : n.id) : null,
       n.amount && n.amount !== '1' ? kv('you hold', n.amount) : null),
     h('div', { class: 'label' }, n.chain === 'eth' ? 'contract' : 'id'),
@@ -131,7 +136,7 @@ function review(prep, n, back) {
       n.amount && n.amount !== '1' ? kv('how many', n.amount) : null,
       kv('standard', STANDARD[n.standard] ?? n.standard),
       kv('to', short(to, 6)),
-      kv('on', CHAIN[n.chain].name),
+      n.chain === 'eth' ? kv('on', whereOf(n), 'loud') : kv('on', CHAIN[n.chain].name),
       addressBlock(to)),
     previewBlock(prep.preview, { extra: prep.warnings }),
     dangers ? ack : null, err, actions(back, next)));

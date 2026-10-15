@@ -1,7 +1,8 @@
 // NFTs. On Solana: Metaplex NFTs (legacy and programmable), Core assets and compressed NFTs, listed through the RPC's
 // DAS methods (or, on an RPC without them, from your token accounts and their Metaplex metadata), and the transfer each
-// standard takes, built here for your wallet alone to sign. On Ethereum: ERC-721 and ERC-1155 tokens from Blockscout,
-// sent with safeTransferFrom. Only names and ids are ever read out of them: no picture and no link reaches plum's
+// standard takes, built here for your wallet alone to sign. On Ethereum and its networks (Base, Arbitrum, Polygon):
+// ERC-721 and ERC-1155 tokens from each network's Blockscout, sent with safeTransferFrom. Only names and ids are ever
+// read out of them: no picture and no link reaches plum's
 // pages (a picture would tell its host your IP), and every name is cleaned before it's shown.
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { base58Encode, isAddress } from '../shared/base58.js';
@@ -11,6 +12,7 @@ import { associatedTokenAddress, findProgramAddress } from '../shared/pda.js';
 import { plainName } from '../shared/text.js';
 import { ATA_PROGRAM, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, base58Decode32, ix } from '../shared/tx.js';
 import { ethRpc, sameAddress } from './eth.js';
+import { MAINNET } from './evm-chains.js';
 import { getJson } from './net.js';
 
 export const TOKEN_METADATA = 'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s';
@@ -502,22 +504,22 @@ export async function nftNotes({ t, all, programOf, owner, ok, preMap, postMap, 
 
 /* ------------------------------------------------------------ Ethereum */
 
-const BLOCKSCOUT = 'https://eth.blockscout.com/api/v2';
 /** Blockscout pages read at most (50 NFTs each). */
 const ETH_PAGES = 4;
 
-/** What an address holds on Ethereum, ERC-721 and ERC-1155, by Blockscout's word (scams by its word left out). */
-export async function listEth(address) {
+/** What an address holds on one Ethereum network (Ethereum itself unless another is given), ERC-721 and ERC-1155, by
+ * that network's Blockscout (scams by its word left out). Each is marked with its network: its tag, and its key. */
+export async function listEth(address, net = MAINNET) {
   const items = [];
   let next = null;
   for (let page = 0; page < ETH_PAGES; page++) {
     const q = new URLSearchParams({ type: 'ERC-721,ERC-1155', ...(next ?? {}) });
-    const r = await getJson(`${BLOCKSCOUT}/addresses/${address}/nft?${q}`, { timeout: 20_000 });
+    const r = await getJson(`${net.blockscout}/addresses/${address}/nft?${q}`, { timeout: 20_000 });
     items.push(...(Array.isArray(r?.items) ? r.items : []));
     next = r?.next_page_params && typeof r.next_page_params === 'object' ? Object.fromEntries(Object.entries(r.next_page_params).map(([k, v]) => [k, String(v)])) : null;
     if (!next) break;
   }
-  return items.map((it) => fromBlockscout(it)).filter(Boolean).sort(byCollection);
+  return items.map((it) => fromBlockscout(it, net.tag)).filter(Boolean).sort(byCollection).map((n) => ({ ...n, net: net.key }));
 }
 
 /** Does `owner` hold this NFT now, by the contract's own word (ERC-721 ownerOf, ERC-1155 balanceOf)? */
