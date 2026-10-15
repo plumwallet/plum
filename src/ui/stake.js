@@ -5,6 +5,7 @@ import { formatUnits, prettyAmount, short } from '../shared/format.js';
 import { call } from './api.js';
 import { active, ctx, errLine, field, forget, go, show, screen, showErr } from './app.js';
 import { busyButton, h } from './dom.js';
+import { lidoScreen, stakeNetSeg } from './lido.js';
 import { actions, addressBlock, box, kv, previewBlock, spinner } from './parts.js';
 
 const sol = (lamports, sig = 6) => `${prettyAmount(BigInt(lamports), 9, { sig })} SOL`;
@@ -33,16 +34,18 @@ const who = (v) => (v?.name ? `${v.name}` : short(v?.vote ?? '', 6));
 
 /* ------------------------------------------------------------ your stake */
 
-export async function stakeScreen() {
+export async function stakeScreen({ net = null } = {}) {
   const w = active();
-  if (!w.chains.sol) { show(...screen('stake', () => go.home(), h('div', { class: 'note' }, `staking is on Solana, and ${w.name} has no Solana address (it's an imported key).`))); return; }
+  // SOL here; ETH with Lido in lido.js, picked at the top of either
+  if (net === 'eth' || (net == null && !w.chains.sol && w.chains.eth)) { lidoScreen({ top: stakeNetSeg(w, 'eth') }); return; }
+  if (!w.chains.sol) { show(...screen('stake', () => go.home(), h('div', { class: 'note' }, `staking is on Solana and Ethereum, and ${w.name} has neither address (it's an imported key).`))); return; }
   const list = h('div', { class: 'tks' }, h('p', { class: 'empty', 'aria-label': 'reading' }, spinner()));
   const total = h('span', { class: 'dim' });
   const foot = h('p', { class: 'fine' });
   const err = errLine();
   const again = h('button', { class: 'mini', type: 'button', title: 'read your stake again' }, 'refresh');
   const next = h('button', { class: 'btn-go', type: 'button', onclick: () => pickValidator() }, 'stake SOL ->');
-  show(...screen('stake', () => go.home(),
+  show(...screen('stake', () => go.home(), stakeNetSeg(w, 'sol'),
     box('your stake', { tone: 'soft', side: h('span', { class: 'head-side' }, total, again) }, list),
     foot, err, actions(() => go.home(), next)));
   loadValidators().catch(() => {});
