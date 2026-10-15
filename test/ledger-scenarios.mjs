@@ -12,12 +12,14 @@ import { base58Decode, base58Encode } from '../src/shared/base58.js';
 import { concat, hex, u32le, u64le, utf8 } from '../src/shared/bytes.js';
 import { compileLegacy, ix } from '../src/shared/tx.js';
 import * as B from '../src/background/btc.js';
+import { SIGHASH, sighashV0, sighashV1 } from '../src/background/btc-tx.js';
 import * as E from '../src/background/eth.js';
 import { addressOf, hash160, secretAt, seedOf, signBtcDigest, verifySol } from '../src/background/keys.js';
 import { appInfo } from '../src/background/ledger/apdu.js';
 import * as LB from '../src/background/ledger/bitcoin.js';
 import * as LE from '../src/background/ledger/ethereum.js';
 import * as LS from '../src/background/ledger/solana.js';
+import { internalKey, outputKey, taprootAddressOf, taprootScript, verifyKeyPath } from '../src/background/taproot.js';
 
 export const SEED_PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const seed = seedOf(SEED_PHRASE);
@@ -58,10 +60,11 @@ export const BARE_UINT = E.parseTypedData({
   message: { amount: '1000', owner: '0x9858EfFD232B4033E47d90003D41EC34EcaEda94' },
 });
 
-/** A previous transaction paying `value` sats to wallet 1, made unique by `tag`. */
-function prevTx(value, tag) {
+/** A previous transaction paying `value` sats to wallet 1 (its bc1q address, or `script`), made unique by `tag`. */
+function prevTx(value, tag, script = null) {
   const own = concat(Uint8Array.of(0x00, 0x14), hash160(secp256k1.getPublicKey(secretAt(seed, 'btc', BTC), true)));
-  const raw = concat(u32le(2), Uint8Array.of(1), new Uint8Array(32).fill(tag), u32le(0), Uint8Array.of(0), u32le(0xffffffff), Uint8Array.of(1), u64le(value), Uint8Array.of(own.length), own, u32le(0));
+  const to = script ?? own;
+  const raw = concat(u32le(2), Uint8Array.of(1), new Uint8Array(32).fill(tag), u32le(0), Uint8Array.of(0), u32le(0xffffffff), Uint8Array.of(1), u64le(value), Uint8Array.of(to.length), to, u32le(0));
   return { raw, txid: hex(sha256(sha256(raw)).reverse()), own };
 }
 const P1 = prevTx(100_000n, 3);
@@ -74,6 +77,46 @@ export const BTC_PLAN = {
 };
 export const BTC_PREV = new Map([[P1.txid, LB.stripWitness(hex(P1.raw), P1.txid)], [P2.txid, LB.stripWitness(hex(P2.raw), P2.txid)]]);
 export const btcDigests = () => B.sighashes({ inputs: BTC_PLAN.inputs, outputs: BTC_PLAN.outputs, locktime: 0 }, hash160(secp256k1.getPublicKey(secretAt(seed, 'btc', BTC), true)));
+
+// taproot: wallet 1's bc1p address (m/86'), its coins spent alone and beside a bc1q one
+const TR = "m/86'/0'/0'/0/0";
+export const TAPROOT = taprootAddressOf(secretAt(seed, 'btc', TR));
+const TR_OUTPUT = outputKey(internalKey(secretAt(seed, 'btc', TR))).x;
+const FPR = root.fingerprint.toString(16).padStart(8, '0');
+const XPUB84 = root.derive("m/84'/0'/0'").publicExtendedKey;
+const XPUB86 = root.derive("m/86'/0'/0'").publicExtendedKey;
+const T1 = prevTx(60_000n, 5, taprootScript(TR_OUTPUT));
+const T2 = prevTx(15_000n, 6, taprootScript(TR_OUTPUT));
+const P3 = prevTx(20_000n, 7);
+export const TR_PLAN = {
+  inputs: [{ txid: T1.txid, vout: 0, value: 60_000n, kind: 'p2tr', confirmed: true }, { txid: T2.txid, vout: 0, value: 15_000n, kind: 'p2tr', confirmed: true }],
+  outputs: [{ script: DEST.script, value: 70_000n, kind: 'p2wpkh', mine: false }, { script: P1.own, value: 3_400n, kind: 'p2wpkh', mine: true }],
+  fee: 1_600n,
+};
+export const MIXED_PLAN = {
+  inputs: [{ txid: P3.txid, vout: 0, value: 20_000n, kind: 'p2wpkh', confirmed: true }, { txid: T1.txid, vout: 0, value: 60_000n, kind: 'p2tr', confirmed: true }],
+  outputs: [{ script: DEST.script, value: 75_000n, kind: 'p2wpkh', mine: false }, { script: P1.own, value: 3_300n, kind: 'p2wpkh', mine: true }],
+  fee: 1_700n,
+};
+const TR_PREV = new Map([T1, T2, P3].map((p) => [p.txid, LB.stripWitness(hex(p.raw), p.txid)]));
+const btcKeys = () => ({ fingerprint: FPR, segwit: { publicKey: LB.derive(XPUB84, 0).publicKey, path: BTC }, taproot: { ...LB.deriveTaproot(XPUB86, 0), path: TR } });
+const trMaps = (plan) => LB.psbtMaps({ inputs: plan.inputs, outputs: plan.outputs, sequence: 0xfffffffd }, btcKeys(), TR_PREV);
+
+/** What each coin of a plan signs, as plum's signSpend works it out: BIP-143 for bc1q coins, BIP-341 for bc1p ones. */
+function planDigests(plan) {
+  const keyHash = hash160(secp256k1.getPublicKey(secretAt(seed, 'btc', BTC), true));
+  const tx = { version: 2, locktime: 0, inputs: plan.inputs.map((c) => ({ txid: c.txid, vout: c.vout, sequence: 0xfffffffd, scriptSig: new Uint8Array(0), witness: [] })), outputs: plan.outputs };
+  const prevouts = plan.inputs.map((c) => ({ value: c.value, script: c.kind === 'p2tr' ? taprootScript(TR_OUTPUT) : P1.own }));
+  return plan.inputs.map((c, i) => (c.kind === 'p2tr' ? sighashV1(tx, i, prevouts, SIGHASH.DEFAULT) : sighashV0(tx, i, B.p2pkhCode(keyHash), c.value, SIGHASH.ALL)));
+}
+/** The device's taproot signatures: one per bc1p coin, each a BIP-340 signature by the tweaked key over plum's sighash. */
+function checkTaproot(yields, plan, digests = planDigests(plan)) {
+  assert.deepEqual(yields.map((y) => y.index), plan.inputs.flatMap((c, i) => (c.kind === 'p2tr' ? [i] : [])));
+  for (const y of yields) {
+    assert.equal(y.signature.length, 64, 'SIGHASH_DEFAULT: no sighash byte');
+    assert.ok(verifyKeyPath(y.signature, digests[y.index], TR_OUTPUT), `input ${y.index}'s signature verifies`);
+  }
+}
 
 /* ------------------------------------------------------------ the scenarios */
 
@@ -143,4 +186,24 @@ export const SCENARIOS = [
     },
   },
   { name: 'btc sign a message', app: 'Bitcoin', device: 'approve', run: (l) => LB.signMessage(l, BTC, utf8('hello from plum')), check: (r) => assert.ok(r[0] >= 31 && r[0] <= 34) },
+  // Bitcoin, taproot
+  { name: 'btc taproot account key', app: 'Bitcoin', run: (l) => LB.xpub(l, "m/86'/0'/0'"), check: (r) => assert.equal(r, XPUB86) },
+  { name: 'btc taproot address from the policy', app: 'Bitcoin', run: (l) => LB.walletAddress(l, LB.taprootPolicy(FPR, XPUB86), { index: 0 }), check: (r) => { assert.equal(r, TAPROOT); assert.equal(LB.deriveTaproot(XPUB86, 0).address, r); } },
+  { name: 'btc taproot address shown on the device', app: 'Bitcoin', device: 'approve', run: (l) => LB.walletAddress(l, LB.taprootPolicy(FPR, XPUB86), { index: 2, display: true }), check: (r) => assert.equal(r, taprootAddressOf(secretAt(seed, 'btc', "m/86'/0'/0'/0/2"))) },
+  { name: 'btc sign a taproot send (two coins)', app: 'Bitcoin', device: 'approve', run: (l) => LB.signPsbt(l, trMaps(TR_PLAN), LB.taprootPolicy(FPR, XPUB86)), check: (r) => checkTaproot(r, TR_PLAN) },
+  {
+    // as hw.js's signBtc does it: the bc1q coin under the segwit policy, then the bc1p coin under the taproot one
+    name: 'btc sign a send from both addresses (two passes)', app: 'Bitcoin', device: 'approve2',
+    run: async (l) => {
+      const maps = trMaps(MIXED_PLAN);
+      return { segwit: await LB.signPsbt(l, maps, LB.segwitPolicy(FPR, XPUB84)), taproot: await LB.signPsbt(l, maps, LB.taprootPolicy(FPR, XPUB86)) };
+    },
+    check: (r) => {
+      const digests = planDigests(MIXED_PLAN);
+      const key = secretAt(seed, 'btc', BTC);
+      assert.deepEqual(r.segwit.map((y) => y.index), [0]);
+      assert.equal(hex(r.segwit[0].signature), hex(concat(signBtcDigest(digests[0], key), Uint8Array.of(1))));
+      checkTaproot(r.taproot, MIXED_PLAN, digests);
+    },
+  },
 ];

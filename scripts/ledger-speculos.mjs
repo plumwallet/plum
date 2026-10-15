@@ -6,7 +6,7 @@
 // (COIN=bitcoin), built for the Nano S Plus with Ledger's app builder image. Docker must be running; this starts and
 // stops one container per app.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SCENARIOS, SEED_PHRASE } from '../test/ledger-scenarios.mjs';
@@ -39,7 +39,10 @@ async function start(app) {
   throw new Error(`Speculos didn't start with ${app}`);
 }
 
-const record = { device: 'Speculos, Nano S Plus', seed: 'the abandon ... about test phrase', apps: {}, scenarios: {} };
+const OUT = join(ROOT, 'test', 'fixtures', 'ledger-speculos.json');
+// with --only, the other apps' scenarios stay as they were recorded
+const record = ONLY && existsSync(OUT) ? JSON.parse(readFileSync(OUT, 'utf8')) : { device: 'Speculos, Nano S Plus', seed: 'the abandon ... about test phrase', apps: {}, scenarios: {} };
+for (const [name, s] of Object.entries(record.scenarios)) if (s.app.toLowerCase() === ONLY?.toLowerCase()) delete record.scenarios[name];
 let failed = 0;
 try {
   // a fresh device for each run of scenarios that need the same settings (the emulator keeps them until it stops)
@@ -58,7 +61,9 @@ try {
       for (const s of list) {
         const from = link.log.length;
         const running = s.run(link);
-        const pressed = s.device ? (s.device === 'approve' ? api.approve({ max: 80 }) : api.reject({ max: 80 })) : null;
+        // approve2: two reviews in a row (a send from both Bitcoin addresses is two passes)
+        const pressed = s.device === 'approve2' ? api.approve({ max: 80 }).then(async (a) => [...a, ...await api.approve({ max: 80 })])
+          : s.device ? (s.device === 'approve' ? api.approve({ max: 80 }) : api.reject({ max: 80 })) : null;
         // buttons that never reach the answer leave the device waiting: closing the link ends this scenario
         pressed?.catch(() => link.close());
         try {
@@ -82,9 +87,8 @@ try {
   stop();
 }
 if (RECORD && !failed) {
-  const out = join(ROOT, 'test', 'fixtures', 'ledger-speculos.json');
-  mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, `${JSON.stringify(record, null, 1)}\n`);
+  mkdirSync(dirname(OUT), { recursive: true });
+  writeFileSync(OUT, `${JSON.stringify(record, null, 1)}\n`);
   console.log(`\nrecorded ${Object.keys(record.scenarios).length} scenarios to test/fixtures/ledger-speculos.json`);
 }
 console.log(failed ? `\nspeculos: ${failed} failed` : '\nspeculos: passed');

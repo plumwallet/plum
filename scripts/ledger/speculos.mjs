@@ -50,9 +50,9 @@ export function speculosApi({ base = 'http://127.0.0.1:5000' } = {}) {
     await fetch(`${base}/button/${button}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'press-and-release' }) });
     await sleep(120);
   };
-  /** Step right through a review until a screen says one of `goal` (a regex), then press both buttons. Returns the
-   * screens seen on the way. */
-  const answer = async (goal, { max = 40, start = 15_000 } = {}) => {
+  /** Step right through a review until a screen says one of `goal` (a regex), then press both buttons; screens that
+   * match `pass` (a warning's "continue") are accepted with both buttons on the way. Returns the screens seen. */
+  const answer = async (goal, { max = 40, start = 15_000, pass = null } = {}) => {
     const seen = [];
     // wait for the review to come up (the screen changes once the app has the request)
     const before = await screen();
@@ -68,7 +68,7 @@ export function speculosApi({ base = 'http://127.0.0.1:5000' } = {}) {
       seen.push(now);
       if (goal.test(now)) { await press('both'); return seen; }
       // a warning to get past (blind signing ahead: both buttons accept the risk and the review goes on)
-      await press(/press both buttons|to accept risk/i.test(now) ? 'both' : 'right');
+      await press(/press both buttons|to accept risk/i.test(now) || pass?.test(now) ? 'both' : 'right');
     }
     throw new Error(`never reached ${goal} on the device; screens: ${seen.join(' || ')}`);
   };
@@ -95,5 +95,5 @@ export function speculosApi({ base = 'http://127.0.0.1:5000' } = {}) {
     await press('both');
     return after;
   };
-  return { screen, press, answer, setting, approve: (o) => answer(/^(approve|accept and send|accept risk and sign|sign (transaction|message|typed message|psbt|operation)|sign|confirm|hold to sign)\b/i, o), reject: (o) => answer(/^reject\b/i, o) };
+  return { screen, press, answer, setting, approve: (o) => answer(/^(approve|accept and send|accept risk and sign|sign (transaction|message|typed message|psbt|operation)|sign|confirm|hold to sign)\b/i, { pass: /^continue\b/i, ...o }), reject: (o) => answer(/^reject\b/i, o) };
 }
