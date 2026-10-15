@@ -376,7 +376,8 @@ try {
   const dapp = await newPage();
   await dapp.goto(DAPP_URL, { waitUntil: 'load' });
   await step('a dApp finds plum twice: the Wallet Standard (Solana) and EIP-6963 (Ethereum)', async () => {
-    assert.deepEqual(await dapp.evaluate(() => window.dapp.names()), ['Plum']);
+    // (two Wallet Standard wallets: Solana's, and Bitcoin's with the bitcoin:* features)
+    assert.deepEqual(await dapp.evaluate(() => window.dapp.names()), ['Plum', 'Plum']);
     const info = await dapp.evaluate(() => window.dapp.providers());
     assert.equal(info.length, 1);
     assert.deepEqual([info[0].name, info[0].rdns], ['Plum', 'fun.plum']);
