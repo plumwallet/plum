@@ -102,9 +102,12 @@ export function fakeChain(balances = {}) {
     let err = null;
     for (const ix of t.instructions) {
       const program = t.keys[ix.programIndex];
-      if (program === SYSTEM_PROGRAM && ix.data.length === 12 && readU32(ix.data, 0) === 2) {
+      // Transfer (2), CreateAccount (0) and CreateAccountWithSeed (3) move lamports from the first account to the second
+      const kind = program === SYSTEM_PROGRAM && ix.data.length >= 12 ? readU32(ix.data, 0) : null;
+      const at = kind === 2 || kind === 0 ? 4 : kind === 3 ? 36 + 8 + Number(readU64(ix.data, 36)) : null;
+      if (at != null && ix.data.length >= at + 8) {
         const [from, to] = ix.accounts.map((i) => t.keys[i]);
-        const lamports = readU64(ix.data, 4);
+        const lamports = readU64(ix.data, at);
         if (get(from) < lamports) err = { InstructionError: [0, { Custom: 1 }] };
         after.set(from, get(from) - lamports);
         after.set(to, get(to) + lamports);
@@ -112,8 +115,17 @@ export function fakeChain(balances = {}) {
     }
     return { t, after, err };
   };
-  const account = (a, map = bal) => (map.has(a) ? { lamports: Number(map.get(a)), owner: SYSTEM_PROGRAM, data: ['', 'base64'], executable: false } : null);
+  // accounts with data (vote and stake accounts, NFTs), by address, as the RPC returns them
+  const accounts = new Map();
+  const account = (a, map = bal) => accounts.get(a) ?? (map.has(a) ? { lamports: Number(map.get(a)), owner: SYSTEM_PROGRAM, data: ['', 'base64'], executable: false } : null);
   const handlers = {
+    getEpochInfo: () => ({ absoluteSlot: 4_320_100, blockHeight: 4_000_000, epoch: 10, slotIndex: 100, slotsInEpoch: 432_000, transactionCount: 1 }),
+    getStakeMinimumDelegation: () => ({ context: { slot: 1 }, value: 1_000_000_000 }),
+    getMinimumBalanceForRentExemption: ([size]) => (128 + size) * 6960,
+    getProgramAccounts: () => [],
+    getInflationReward: ([addrs]) => addrs.map(() => null),
+    getVoteAccounts: () => ({ current: [], delinquent: [] }),
+    getBlockProduction: () => ({ context: { slot: 1 }, value: { byIdentity: {}, range: { firstSlot: 0, lastSlot: 1 } } }),
     getBalance: ([a]) => ({ value: Number(bal.get(a) ?? 0n) }),
     getMultipleAccounts: ([addrs]) => ({ value: addrs.map((a) => account(a)) }),
     getAccountInfo: ([a]) => ({ value: account(a) }),
@@ -143,6 +155,8 @@ export function fakeChain(balances = {}) {
   const out = {
     log,
     sentTxs,
+    accounts,
+    handlers,
     /** a hook to change simulation results (value -> value), or null */
     simExtra: null,
     async post(_url, body) {

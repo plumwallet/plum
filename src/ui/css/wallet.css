@@ -285,7 +285,7 @@ html.page .faces { grid-template-columns: repeat(8, 1fr); }
 .bal { display: flex; justify-content: space-between; align-items: baseline; gap: 1ch; min-height: 20px; color: var(--ink-2); }
 .bal-l { display: flex; gap: 1.4ch; align-items: baseline; min-width: 0; }
 .bal-l b { color: var(--ink); }
-.acts { display: flex; justify-content: space-between; margin: 0 -0.4ch; }
+.acts { display: grid; grid-template-columns: repeat(3, auto); justify-content: space-between; margin: 0 -0.4ch; }
 .acts .btn { padding: 0 0.4em; height: 36px; color: var(--ink-2); }
 
 /* holdings: one line each, lit under the pointer */

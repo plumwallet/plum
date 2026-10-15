@@ -9,6 +9,8 @@ import { after, afterEach, before, beforeEach, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Buckets, METHODS, addressKey, clientOf, makeProxy, readCall, secretsOf, upstreamOf } from '../proxy/rpc-proxy.mjs';
 import { NETWORKS, PLUM_RPC, client, transport } from '../src/background/rpc.js';
+import * as stake from '../src/background/stake.js';
+import { fakeBrowser } from './fake-browser.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const KEY = 'test-key-0123456789abcdef'; // 16 characters or more: the proxy treats it as the paid RPC's key
@@ -34,6 +36,13 @@ const RESULTS = {
   getTokenAccountsByOwner: { context: { slot: 1 }, value: [] },
   sendTransaction: SIG,
   simulateTransaction: { context: { slot: 1 }, value: { err: null, logs: [], accounts: [null] } },
+  getEpochInfo: { absoluteSlot: 900, blockHeight: 800, epoch: 2, slotIndex: 100, slotsInEpoch: 432000, transactionCount: 1 },
+  getVoteAccounts: { current: [], delinquent: [] },
+  getBlockProduction: { context: { slot: 1 }, value: { byIdentity: {}, range: { firstSlot: 0, lastSlot: 1 } } },
+  getProgramAccounts: [],
+  getStakeMinimumDelegation: { context: { slot: 1 }, value: 1_000_000_000 },
+  getMinimumBalanceForRentExemption: 1_666_240,
+  getInflationReward: [null],
 };
 const ok = (call) => ({ status: 200, body: { jsonrpc: '2.0', id: call.id, result: RESULTS[call.method] ?? null } });
 let answer = ok; // how the stand-in answers: (call, req, res) => { status, body, type } or 'done' when it answered itself
@@ -165,6 +174,31 @@ test("every call the wallet's RPC client makes goes through, as the wallet makes
   assert.deepEqual(seen[4].call.params[1].accounts, { encoding: 'base64', addresses: [A] });
 });
 
+test("staking's calls go through, exactly as stake.js makes them", async () => {
+  const p = await start();
+  const original = transport.post;
+  globalThis.browser = fakeBrowser().browser;
+  transport.post = async (url, body) => {
+    const r = await raw(url, { headers: { 'content-type': 'application/json', origin: EXT }, body: JSON.stringify(body) });
+    return { status: r.status, json: r.json };
+  };
+  try {
+    const rpc = client(p.url);
+    const o = await stake.overview(rpc, A, 'mainnet');
+    assert.deepEqual(o.accounts, []);
+    assert.equal(o.minimum, '1000000000');
+    const v = await stake.validators(rpc, 'mainnet');
+    assert.deepEqual(v.list, []);
+  } finally {
+    transport.post = original;
+    delete globalThis.browser;
+  }
+  const methods = seen.map((s) => s.call.method);
+  for (const m of ['getEpochInfo', 'getProgramAccounts', 'getStakeMinimumDelegation', 'getMinimumBalanceForRentExemption', 'getVoteAccounts', 'getBlockProduction', 'getMultipleAccounts']) assert.ok(methods.includes(m), m);
+  // both stake lookups (by withdrawer, by staker) and the validator names, nothing refused on the way
+  assert.equal(methods.filter((m) => m === 'getProgramAccounts').length, 3);
+});
+
 /* ------------------------------------------------------------ who gets in */
 
 test('only a browser extension gets an answer; web pages, scripts and null origins are turned away', async () => {
@@ -202,8 +236,28 @@ test("the browser's preflight is answered for extensions only", async () => {
 
 test('anything plum never sends is turned down before it reaches the paid RPC', async () => {
   const p = await start();
+  const STAKE = 'Stake11111111111111111111111111111111111111';
+  const CONFIG = 'Config1111111111111111111111111111111111111';
+  const INFO = 'Va1idator1nfo111111111111111111111111111111';
+  const byWithdrawer = { encoding: 'base64', commitment: 'confirmed', filters: [{ dataSize: 200 }, { memcmp: { offset: 44, bytes: A } }] };
   const cases = [
-    [rpcCall('getProgramAccounts', [TOKEN]), 400, -32601],
+    // getProgramAccounts: only plum's two lookups, exactly as plum makes them
+    [rpcCall('getProgramAccounts', [TOKEN]), 400, -32602],
+    [rpcCall('getProgramAccounts', [TOKEN, byWithdrawer]), 400, -32602],
+    [rpcCall('getProgramAccounts', [STAKE]), 400, -32602],
+    [rpcCall('getProgramAccounts', [STAKE, { encoding: 'base64', filters: [{ dataSize: 200 }] }]), 400, -32602],
+    [rpcCall('getProgramAccounts', [STAKE, { ...byWithdrawer, filters: [{ dataSize: 200 }, { memcmp: { offset: 76, bytes: A } }] }]), 400, -32602],
+    [rpcCall('getProgramAccounts', [STAKE, { ...byWithdrawer, filters: [byWithdrawer.filters[1]] }]), 400, -32602],
+    [rpcCall('getProgramAccounts', [STAKE, { ...byWithdrawer, filters: [...byWithdrawer.filters, { dataSize: 200 }] }]), 400, -32602],
+    [rpcCall('getProgramAccounts', [STAKE, { ...byWithdrawer, encoding: 'jsonParsed' }]), 400, -32602],
+    [rpcCall('getProgramAccounts', [STAKE, { ...byWithdrawer, dataSlice: { offset: 0, length: 0 } }]), 400, -32602],
+    [rpcCall('getProgramAccounts', [STAKE, { ...byWithdrawer, filters: [{ dataSize: 200 }, { memcmp: { offset: 44, bytes: A, encoding: 'base58' } }] }]), 400, -32602],
+    [rpcCall('getProgramAccounts', [CONFIG, { encoding: 'base64', filters: [] }]), 400, -32602],
+    [rpcCall('getProgramAccounts', [CONFIG, { encoding: 'base64', filters: [{ memcmp: { offset: 1, bytes: A } }] }]), 400, -32602],
+    [rpcCall('getProgramAccounts', [CONFIG, { encoding: 'base64', filters: [{ memcmp: { offset: 34, bytes: INFO } }] }]), 400, -32602],
+    [rpcCall('getInflationReward', [Array(101).fill(A)]), 400, -32602],
+    [rpcCall('getMinimumBalanceForRentExemption', ['200']), 400, -32602],
+    [rpcCall('getMinimumBalanceForRentExemption', [1e12]), 400, -32602],
     [rpcCall('requestAirdrop', [A, 1_000_000_000]), 400, -32601],
     [rpcCall('getTransaction', [SIG]), 400, -32601],
     [rpcCall('__proto__', []), 400, -32601],

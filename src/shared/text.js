@@ -19,3 +19,6 @@ export const hasHidden = (s) => HIDDEN.test(String(s));
 
 /** One line of plain text: hidden characters gone, line breaks as spaces, at most `max` characters (whole code points). */
 export const cleanLine = (s, max = 64) => [...String(s).replace(HIDDEN_ALL, '').replace(/[\r\n\t]+/g, ' ').trim()].slice(0, max).join('');
+
+/** A name from outside drawn in plum's type: a clean line (cleanLine) without pictographs, spaces run together. */
+export const plainName = (s, max = 64) => cleanLine(String(s).replace(HIDDEN_ALL, '').replace(/\p{Extended_Pictographic}/gu, '').replace(/\s+/g, ' '), max);

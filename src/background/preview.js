@@ -175,6 +175,15 @@ export async function previewTx(input, { owner, rpc, meta }) {
       if (kind === 4 && d.length >= 12 && acct(4) === owner && acct(1) !== owner) {
         w.add('danger', `it withdraws ${prettyAmount(readU64(d, 4), 9)} SOL from your stake account ${short(acct(0))} to ${short(acct(1))}`, `outflow:${acct(0)}`);
       }
+      // Initialize (0) names the withdrawer in its data, InitializeChecked (9) as its fourth account: a stake account
+      // someone else can withdraw takes whatever SOL goes into it
+      const withdrawer = kind === 0 && d.length >= 68 ? base58Encode(d.subarray(36, 68)) : kind === 9 ? acct(3) : null;
+      if (withdrawer && withdrawer !== owner) w.add('danger', `it sets up the stake account ${short(acct(0))} for ${short(withdrawer)} to withdraw, not you: SOL put in it is theirs to take`, `withdrawer:${acct(0)}`);
+      // the rest in plain words: DelegateStake (2), Split (3), Deactivate (5), Merge (7)
+      if (kind === 2 && acct(5) === owner) w.add('info', `it stakes the stake account ${short(acct(0))} with the validator ${short(acct(1))}`);
+      if (kind === 5 && acct(2) === owner) w.add('info', `it unstakes your stake account ${short(acct(0))}: it stops earning when this epoch ends`);
+      if (kind === 3 && acct(2) === owner) w.add('info', `it splits ${prettyAmount(d.length >= 12 ? readU64(d, 4) : 0n, 9)} SOL off your stake account ${short(acct(0))} into ${short(acct(1))}`);
+      if (kind === 7 && acct(4) === owner) w.add('info', `it merges your stake account ${short(acct(1))} into ${short(acct(0))}`);
     }
     // MintTo (7) / MintToChecked (14) signed by you as the mint authority: [mint, destination, authority]
     if (TOKEN_PROGRAMS.has(program) && (d[0] === 7 || d[0] === 14) && d.length >= 9 && acct(2) === owner) {

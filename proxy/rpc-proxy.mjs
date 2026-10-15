@@ -55,20 +55,45 @@ const signatures = (v) => Array.isArray(v) && v.length >= 1 && v.length <= 256 &
 const transaction = (v) => typeof v === 'string' && v.length <= 5464 && /^[A-Za-z0-9+/]+={0,2}$/.test(v);
 const tokenFilter = (v) => isObject(v) && Object.keys(v).length === 1 && (address(v.mint) || address(v.programId));
 const simConfig = (v) => isObject(v) && (v.accounts === undefined || (isObject(v.accounts) && addresses(0, 256)(v.accounts.addresses)));
+const integer = (min, max) => (v) => Number.isSafeInteger(v) && v >= min && v <= max;
+/** An object with no keys but these. */
+const only = (keys) => (v) => isObject(v) && Object.keys(v).every((k) => keys.includes(k));
 const need = (check) => ({ check, required: true });
 const may = (check) => ({ check, required: false });
 
-/** Every method the wallet calls (src/background: rpc.js and main.js), each with its params in order. Nothing else. */
+// getProgramAccounts scans a whole program, so only the two lookups plum makes get through, exactly: stake accounts
+// whose staker (offset 12) or withdrawer (offset 44) is one address, and the validators' published names (the Config
+// program's accounts whose first key is the validator-info key)
+const STAKE_PROGRAM = 'Stake11111111111111111111111111111111111111';
+const CONFIG_PROGRAM = 'Config1111111111111111111111111111111111111';
+const VALIDATOR_INFO = 'Va1idator1nfo111111111111111111111111111111';
+const memcmp = (offsets, bytes) => (f) => only(['memcmp'])(f) && only(['offset', 'bytes'])(f.memcmp) && offsets.includes(f.memcmp.offset) && bytes(f.memcmp.bytes);
+const programQuery = only(['encoding', 'commitment', 'filters']);
+const programLookup = ([program, q]) => q.encoding === 'base64' && Array.isArray(q.filters) && (program === STAKE_PROGRAM
+  ? q.filters.length === 2 && only(['dataSize'])(q.filters[0]) && q.filters[0].dataSize === 200 && memcmp([12, 44], address)(q.filters[1])
+  : program === CONFIG_PROGRAM && q.filters.length === 1 && memcmp([1], (b) => b === VALIDATOR_INFO)(q.filters[0]));
+
+/**
+ * Every method the wallet calls (src/background), each with its params in order (and `whole`, a check of them
+ * together, where one param decides what another may be). Nothing else.
+ */
 export const METHODS = {
   getAccountInfo: [need(address), may(config)],
   getBalance: [need(address), may(config)],
   getBlockHeight: [may(config)],
+  getBlockProduction: [may(config)],
+  getEpochInfo: [may(config)],
+  getInflationReward: [need(addresses(1, 100)), may(config)],
   getLatestBlockhash: [may(config)],
+  getMinimumBalanceForRentExemption: [need(integer(0, 10 * 1024 * 1024)), may(config)],
   getMultipleAccounts: [need(addresses(1, 100)), may(config)],
+  getProgramAccounts: Object.assign([need((v) => v === STAKE_PROGRAM || v === CONFIG_PROGRAM), need(programQuery)], { whole: programLookup }),
   getRecentPrioritizationFees: [may(addresses(0, 128))],
   getSignatureStatuses: [need(signatures), may(config)],
   getSignaturesForAddress: [need(address), may(config)],
+  getStakeMinimumDelegation: [may(config)],
   getTokenAccountsByOwner: [need(address), need(tokenFilter), may(config)],
+  getVoteAccounts: [may(config)],
   sendTransaction: [need(transaction), may(config)],
   simulateTransaction: [need(transaction), may(simConfig)],
 };
@@ -92,7 +117,8 @@ export function readCall(text) {
   const shape = Object.hasOwn(METHODS, call.method) ? METHODS[call.method] : null;
   if (!shape) throw new Refusal(400, -32601, "plum's rpc doesn't answer that method", { why: 'method', id });
   const params = call.params ?? [];
-  if (!Array.isArray(params) || params.length > shape.length || shape.some((p, i) => (params[i] === undefined ? p.required : !p.check(params[i])))) {
+  if (!Array.isArray(params) || params.length > shape.length || shape.some((p, i) => (params[i] === undefined ? p.required : !p.check(params[i])))
+    || (shape.whole && !shape.whole(params))) {
     throw new Refusal(400, -32602, `those aren't params plum sends with ${call.method}`, { why: 'params', id });
   }
   return { id, method: call.method, params };

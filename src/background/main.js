@@ -25,6 +25,7 @@ import { previewTx } from './preview.js';
 import { priceOf } from './prices.js';
 import { NETWORKS, checkRpcUrl, client, explorerUrl, networkOfChain } from './rpc.js';
 import { quote as jupQuote, searchTokens, swapTransaction, tokenInfo } from './jupiter.js';
+import * as S from './stake.js';
 import { AUTOLOCK_CHOICES, getSettings, local, session, setSettings } from './store.js';
 import * as W from './wallet.js';
 
@@ -1157,6 +1158,17 @@ async function prepareSwap({ quoteId }) {
   return { id, chain: 'sol', preview, warnings: [], network };
 }
 
+/** A staking step (stake.js plans it), built and previewed like a send: you alone sign it, and you see it simulated. */
+async function prepareStaking(params) {
+  const { address: me } = await requireActive('sol');
+  const { rpc, network } = await net();
+  const { instructions, summary, warnings } = await S.plan(rpc, me, params);
+  const bytes = await buildOwn(rpc, me, instructions);
+  const preview = await previewTx(bytes, { owner: me, rpc, meta: namer(network) });
+  const id = keep({ chain: 'sol', bytes, network, account: me, kind: 'stake' });
+  return { id, chain: 'sol', preview, warnings, summary, network };
+}
+
 async function submitPrepared({ id }) {
   const p = prepared.get(id);
   if (!p) throw fail('that transaction expired: review it again');
@@ -1484,6 +1496,10 @@ const ui = {
   'swap.quote': getQuote,
   'swap.prepare': prepareSwap,
   'swap.submit': submitPrepared,
+  'stake.list': async () => { const { address } = await requireActive('sol'); const { rpc, network } = await net(); return S.overview(rpc, address, network); },
+  'stake.validators': async () => { const { rpc, network } = await net(); return S.validators(rpc, network); },
+  'stake.prepare': prepareStaking,
+  'stake.submit': submitPrepared,
   'tx.status': ({ signature }) => sent.get(signature) ?? null,
   'tokens.search': async ({ query }) => searchTokens(query, await jupOpts()),
   'approval.get': approvalView,
