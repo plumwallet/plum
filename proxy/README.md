@@ -25,16 +25,26 @@ or a log line.
 
 ## Limits
 
-Each address (an IPv6 /64 counts as one; Cloudflare's `cf-connecting-ip`, trusted only from cloudflared on the same
-machine) gets 6 calls a second with bursts of 120 (importing a recovery phrase checks ~60 wallets in a row), 25,000 a
-day, 1 send a second (bursts of 30), 2 MB a second of answers (bursts of 64 MB) and 12 calls at a time. Everyone together
-gets 30 calls a second (bursts of 150), 300,000 a day, 5 sends a second and 64 calls at a time, so the paid plan's bill
-has a ceiling. Over a limit is a 429 with `Retry-After`, which plum retries and then explains. Every limit can be set
-in the environment by name (`IP_RATE`, `ALL_DAILY`... see `LIMITS` in `rpc-proxy.mjs`). Set the `ALL_` ones under the
-paid plan's own limits, less whatever else uses the same key.
+Calls are counted in what they cost on the paid RPC, in its credits (`CREDITS` in `rpc-proxy.mjs`, Helius's prices): 1
+for a plain call, 10 for `getProgramAccounts` and for each DAS method. Each address (an IPv6 /64 counts as one;
+Cloudflare's `cf-connecting-ip`, trusted only from cloudflared on the same machine) gets 6 credits a second with bursts
+of 200 (importing a recovery phrase checks ~60 wallets in a row; staking's first look takes ~100), 25,000 a day, 1 send
+a second (bursts of 30), 2 MB a second of answers (bursts of 64 MB) and 12 calls at a time. Everyone together gets 30
+credits a second (bursts of 150), 100,000 a day (a third of what a 10M-credit plan allows in a day, leaving the rest to
+whatever else uses the key), 5 sends a second and 64 calls at a time, so the paid plan's bill has a ceiling. Over a
+limit is a 429 with `Retry-After`, which plum retries and then explains. Every limit can be set in the environment by
+name (`IP_RATE`, `ALL_DAILY`... see `LIMITS` in `rpc-proxy.mjs`). Set the `ALL_` ones under the paid plan's own limits,
+less whatever else uses the same key.
 
-Nothing about who asked what is kept. The log gets totals every 15 minutes (calls per method, megabytes out, what was
-turned down and why) and a line when the paid RPC refuses the key, rate-limits plum or is down.
+The validators' published names (the Config program's validator-info accounts, ~3.6 MB) are the same for everyone, so
+the paid RPC is asked for them at most every 6 hours (`NAMES_MINUTES`), once however many ask at the same time, and
+every caller is answered from that copy; while a new read fails, from the one before. They count against the address
+that asks by their size, a credit for every 50 KB (`NAMES_BYTES_PER_CREDIT`, ~72 for the list), owed once they've been
+sent. Only the read itself counts against everyone's limits.
+
+Nothing about who asked what is kept. The log gets totals every 15 minutes (calls per method, the credits they took on
+the paid RPC, megabytes out, what was turned down and why) and a line when the paid RPC refuses the key, rate-limits
+plum or is down.
 
 ## Run it
 

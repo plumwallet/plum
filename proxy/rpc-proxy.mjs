@@ -4,10 +4,12 @@
 //
 // What gets through: one JSON-RPC call per request (no batches), from a browser extension (an Origin of
 // moz-extension:// or chrome-extension://, which no web page can send), as application/json, at most MAX_BODY bytes,
-// with its method in METHODS and its params in the shape Solana takes them. Each address (an IPv6 /64 counts as one)
-// gets a rate with a burst, a daily allowance, its own rate for sends, an allowance of bytes and a few calls at a time;
-// everyone together gets a rate, a daily allowance and a cap on calls at a time, so the paid plan has a ceiling. Nothing
-// about who asked what is kept or logged: the log gets totals every 15 minutes.
+// with its method in METHODS and its params in the shape Solana takes them. Calls are counted in what they cost on the
+// paid RPC (CREDITS). Each address (an IPv6 /64 counts as one) gets a rate of credits with a burst, a daily allowance,
+// its own rate for sends, an allowance of bytes and a few calls at a time; everyone together gets a rate, a daily
+// allowance and a cap on calls at a time, so the paid plan has a ceiling. The validators' published names are the same
+// for everyone and large, so they're read every few hours and answered from a copy kept here. Nothing about who asked
+// what is kept or logged: the log gets totals every 15 minutes.
 //
 //   UPSTREAM_RPC='https://mainnet.helius-rpc.com/?api-key=...' node proxy/rpc-proxy.mjs
 //
@@ -21,26 +23,33 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 
-/** The limits, each one settable from the environment by its name. */
+/** The limits, each one settable from the environment by its name. Rates and allowances are in credits (CREDITS). */
 export const LIMITS = {
-  IP_RATE: 6, // calls a second from one address, on average...
-  IP_BURST: 120, // ...and at once (importing a recovery phrase checks ~60 wallets in a row)
-  IP_DAILY: 25_000, // calls a day from one address
+  IP_RATE: 6, // credits a second from one address, on average...
+  IP_BURST: 200, // ...and at once (importing a recovery phrase checks ~60 wallets in a row; staking's first look takes ~100)
+  IP_DAILY: 25_000, // credits a day from one address
   IP_SEND_RATE: 1, // sendTransaction a second from one address (plum re-sends every ~5 s until a transaction lands)
   IP_SEND_BURST: 30,
   IP_BYTES_RATE: 2_000_000, // bytes of answers a second to one address...
   IP_BYTES_BURST: 64_000_000, // ...and at once
   IP_INFLIGHT: 12, // calls at a time from one address (the phrase scan runs 6 while home loads 3)
-  ALL_RATE: 30, // calls a second from everyone together: keep it under the paid plan's own rate
+  ALL_RATE: 30, // credits a second from everyone together: keep it under the paid plan's own rate
   ALL_BURST: 150,
-  ALL_DAILY: 300_000, // calls a day from everyone together: under the plan's monthly credits / 30, less what else uses the key
+  ALL_DAILY: 100_000, // credits a day from everyone together: a third of a 10M-credit plan's day, the rest left to whatever else uses the key
   ALL_SEND_RATE: 5,
   ALL_SEND_BURST: 25,
   ALL_INFLIGHT: 64, // calls at a time to the paid RPC
   MAX_BODY: 32 * 1024, // bytes in a request: plum's largest (a simulation reading 256 accounts) is ~14 KB
   MAX_ANSWER: 12 * 1024 * 1024, // bytes in an answer: a simulation that reads big market accounts can be a few MB
   TIMEOUT_MS: 20_000, // for the paid RPC to answer in full
+  NAMES_MINUTES: 360, // how long the validators' names (~3.6 MB) are answered from the copy kept here before a new read
+  NAMES_BYTES_PER_CREDIT: 50_000, // the names count against the address that asks by their size: a credit per 50 KB (~72 in all)
 };
+
+/** What a call costs on the paid RPC, in its credits (Helius: 1 for a plain call, 10 for getProgramAccounts and for each
+ * DAS method). The limits count these. */
+export const CREDITS = { getAsset: 10, getAssetBatch: 10, getAssetProof: 10, getAssetsByOwner: 10, getProgramAccounts: 10 };
+export const creditsOf = (method) => (Object.hasOwn(CREDITS, method) ? CREDITS[method] : 1);
 
 /* ------------------------------------------------------------ the calls plum makes, and the params it sends them */
 
@@ -72,6 +81,9 @@ const programQuery = only(['encoding', 'commitment', 'filters']);
 const programLookup = ([program, q]) => q.encoding === 'base64' && Array.isArray(q.filters) && (program === STAKE_PROGRAM
   ? q.filters.length === 2 && only(['dataSize'])(q.filters[0]) && q.filters[0].dataSize === 200 && memcmp([12, 44], address)(q.filters[1])
   : program === CONFIG_PROGRAM && q.filters.length === 1 && memcmp([1], (b) => b === VALIDATOR_INFO)(q.filters[0]));
+/** The validators' names, as the paid RPC is asked for them: the same for everyone, so one copy answers every caller. */
+const NAMES = { method: 'getProgramAccounts', params: [CONFIG_PROGRAM, { encoding: 'base64', commitment: 'confirmed', filters: [{ memcmp: { offset: 1, bytes: VALIDATOR_INFO } }] }] };
+const isNames = (call) => call.method === 'getProgramAccounts' && call.params[0] === CONFIG_PROGRAM;
 
 // The RPC's DAS methods (NFTs): their params are named, not listed, and only the ones plum sends get through
 const bool = (v) => v === true || v === false;
@@ -177,14 +189,16 @@ export class Buckets {
     this.#map.set(key, b);
     if (this.#map.size > this.max) this.#map.delete(this.#map.keys().next().value);
   }
-  /** Take `cost` if it's there: 0, or the seconds until it would be. (A cost of 0 asks whether the key is in debt.) */
+  /** Take `cost` if it's there: 0, or the seconds until it would be. (A cost of 0 asks whether the key is in debt; a cost
+   * above the burst takes the whole burst, since more is never there.) */
   take(key, cost = 1) {
     const b = this.#level(key);
-    if (b.tokens < cost) {
+    const need = Math.min(cost, this.burst);
+    if (b.tokens < need) {
       this.#keep(key, b);
-      return Math.max(1, Math.ceil((cost - b.tokens) / this.rate));
+      return Math.max(1, Math.ceil((need - b.tokens) / this.rate));
     }
-    b.tokens -= cost;
+    b.tokens -= need;
     this.#keep(key, b);
     return 0;
   }
@@ -246,7 +260,7 @@ async function relay(body, res, secrets, max, meter) {
   await pipeline(Readable.fromWeb(body), check, res);
 }
 
-/** The first `max` bytes of a body as text, and no more read than that. */
+/** The first `max` bytes of a body, and no more read than that. */
 async function readSome(body, max) {
   const chunks = [];
   let size = 0;
@@ -257,7 +271,7 @@ async function readSome(body, max) {
       if (size >= max) break; // leaving the loop cancels the rest
     }
   }
-  return Buffer.concat(chunks).subarray(0, max).toString('utf8');
+  return Buffer.concat(chunks).subarray(0, max);
 }
 
 /* ------------------------------------------------------------ the server */
@@ -267,7 +281,7 @@ const EXTENSION = /^(?:moz-extension:\/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 
 function send(res, status, body, headers = {}) {
-  const text = typeof body === 'string' ? body : JSON.stringify(body);
+  const text = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
   res.writeHead(status, { ...JSON_HEADERS, 'content-length': Buffer.byteLength(text), ...headers });
   res.end(text);
 }
@@ -307,7 +321,7 @@ export function makeProxy({ upstream, env = process.env, limits: given = {}, now
   let busy = 0; // calls out to the paid RPC now
 
   // totals for the log, never who asked
-  const totals = { calls: new Map(), refused: new Map(), bytes: 0 };
+  const totals = { calls: new Map(), refused: new Map(), credits: 0, bytes: 0 };
   const count = (map, key) => map.set(key, (map.get(key) ?? 0) + 1);
   const warned = new Map();
   /** Something the operator should know about now (at most once a minute per kind), with the key taken out. */
@@ -322,9 +336,10 @@ export function makeProxy({ upstream, env = process.env, limits: given = {}, now
     const n = calls.reduce((s, [, c]) => s + c, 0);
     if (!n && !totals.refused.size) return;
     const list = (pairs) => pairs.map(([k, c]) => `${k} ${c}`).join(', ') || 'none';
-    log.info?.(`[rpc] last ${every} min: ${n} calls (${list(calls)}), ${(totals.bytes / 1e6).toFixed(1)} MB out; turned down: ${list([...totals.refused])}`);
+    log.info?.(`[rpc] last ${every} min: ${n} calls (${list(calls)}) for ${totals.credits} credits, ${(totals.bytes / 1e6).toFixed(1)} MB out; turned down: ${list([...totals.refused])}`);
     totals.calls.clear();
     totals.refused.clear();
+    totals.credits = 0;
     totals.bytes = 0;
   };
   const timers = [
@@ -334,6 +349,91 @@ export function makeProxy({ upstream, env = process.env, limits: given = {}, now
   for (const t of timers) t.unref();
 
   const limited = (wait, message, why) => new Refusal(429, -32429, `${message}: try again in a moment`, { why, headers: { 'retry-after': String(wait) } });
+
+  /** A call going out to the paid RPC: its credits from everyone's rate and daily allowance, and a place among the calls
+   * out. */
+  const admit = (credits) => {
+    const wait = all.calls.take('all', credits) || all.daily.take('all', credits);
+    if (wait) throw limited(wait, "plum's rpc is busy", 'all-rate');
+    if (busy >= limits.ALL_INFLIGHT) throw limited(1, "plum's rpc is busy", 'all-at-once');
+    totals.credits += credits;
+  };
+
+  /** One call to the paid RPC, written afresh (none of the caller's headers, bytes or address go with it): its answer,
+   * or a Refusal when it rate-limits plum or refuses the key. */
+  async function ask(call, signal) {
+    const up = await fetch(target, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: call.id, method: call.method, params: call.params }),
+      signal,
+      redirect: 'error',
+    });
+    if (up.status === 429) {
+      await up.body?.cancel().catch(() => {});
+      warn('upstream-429', 'the paid RPC is rate-limiting plum: lower ALL_RATE / ALL_DAILY, or raise the plan');
+      throw limited(2, "plum's rpc is busy", 'upstream-429');
+    }
+    if (up.status === 401 || up.status === 403) {
+      await up.body?.cancel().catch(() => {});
+      warn('upstream-key', `the paid RPC refused its key (${up.status}): check UPSTREAM_RPC`);
+      throw new Refusal(502, -32603, "plum's rpc can't reach the network right now", { why: 'upstream-key' });
+    }
+    return up;
+  }
+
+  /** What a call to the paid RPC that went wrong becomes for its caller. */
+  const failed = (e, timedOut) => {
+    if (e instanceof Refusal) return e;
+    if (timedOut) return new Refusal(504, -32603, 'the network took too long to answer', { why: 'upstream-slow' });
+    warn('upstream-down', `the paid RPC failed: ${e?.cause?.code ?? e?.cause?.message ?? e?.message ?? e}`);
+    return new Refusal(502, -32603, "plum's rpc couldn't reach the network: try again", { why: 'upstream-down' });
+  };
+
+  // The validators' names are the same for everyone and ~3.6 MB, so the paid RPC is asked for them at most every
+  // NAMES_MINUTES (once, however many ask at the same time) and every caller is answered from that copy; while a new
+  // read fails, from the one before.
+  let names = null; // { result: the answer's result as JSON, at }
+  let reading = null;
+  async function readNames() {
+    admit(creditsOf(NAMES.method));
+    busy++;
+    let timedOut = false;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, limits.TIMEOUT_MS);
+    try {
+      const up = await ask({ id: 1, ...NAMES }, ctl.signal);
+      const body = await readSome(up.body, limits.MAX_ANSWER + 1);
+      if (body.length > limits.MAX_ANSWER) throw new Refusal(502, -32603, 'that answer is too large', { why: 'answer-too-large' });
+      if (secrets.some((s) => body.includes(s))) {
+        warn('key-in-answer', "an answer from the paid RPC held the RPC's own key: it was cut off");
+        throw new Refusal(502, -32603, 'that answer was cut off', { why: 'key-in-answer' });
+      }
+      let json = null;
+      try { json = JSON.parse(body.toString('utf8')); } catch { /* not json */ }
+      if (up.ok && Array.isArray(json?.result)) return (names = { result: Buffer.from(JSON.stringify(json.result)), at: now() });
+      // the chain's own word on it goes back to the caller; anything else doesn't
+      if (json?.jsonrpc === '2.0' && isObject(json.error)) {
+        throw new Refusal(up.ok ? 200 : up.status, Number.isSafeInteger(json.error.code) ? json.error.code : -32603, String(json.error.message ?? 'the network turned that down'), { why: 'names-error' });
+      }
+      throw new Refusal(502, -32603, `plum's rpc got ${up.status} from the network: try again`, { why: `upstream-${up.status}` });
+    } catch (e) {
+      throw failed(e, timedOut);
+    } finally {
+      busy--;
+      clearTimeout(timer);
+    }
+  }
+  async function namesCopy() {
+    if (names && now() - names.at < limits.NAMES_MINUTES * 60_000) return names;
+    reading ??= readNames().finally(() => { reading = null; });
+    try {
+      return await reading;
+    } catch (e) {
+      if (names) return names;
+      throw e;
+    }
+  }
 
   async function handle(req, res) {
     const path = new URL(req.url ?? '/', 'http://plum').pathname;
@@ -361,7 +461,8 @@ export function makeProxy({ upstream, env = process.env, limits: given = {}, now
       if (String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase() !== 'application/json') throw new Refusal(415, -32600, 'send the call as application/json', { why: 'type' });
       if (Number(req.headers['content-length'] ?? 0) > limits.MAX_BODY) throw new Refusal(413, -32600, 'that request is too large', { why: 'size', headers: { connection: 'close' } });
 
-      // every request counts against its address before anything is done for it
+      // every request counts against its address before anything is done for it: a credit now, the rest of what its call
+      // costs once that's read
       if ((inflight.get(who) ?? 0) >= limits.IP_INFLIGHT) throw limited(1, 'too many calls at once from your address', 'ip-at-once');
       inflight.set(who, (inflight.get(who) ?? 0) + 1);
       mine = true;
@@ -379,43 +480,43 @@ export function makeProxy({ upstream, env = process.env, limits: given = {}, now
       }
       const call = readCall(Buffer.concat(chunks).toString('utf8'));
       id = call.id;
+      const credits = creditsOf(call.method);
+      wait = credits > 1 ? ip.calls.take(who, credits - 1) || ip.daily.take(who, credits - 1) : 0;
+      if (wait) throw limited(wait, 'too many calls from your address', 'ip-rate');
       if (call.method === 'sendTransaction') {
         wait = ip.sends.take(who);
         if (wait) throw limited(wait, 'too many sends from your address', 'ip-sends');
         wait = all.sends.take('all');
         if (wait) throw limited(wait, "plum's rpc is busy", 'all-sends');
       }
-      wait = all.calls.take('all') || all.daily.take('all');
-      if (wait) throw limited(wait, "plum's rpc is busy", 'all-rate');
-      if (busy >= limits.ALL_INFLIGHT) throw limited(1, "plum's rpc is busy", 'all-at-once');
 
-      // to the paid RPC: the checked call, written afresh (none of the caller's headers, bytes or address go with it)
+      if (isNames(call)) {
+        const copy = await namesCopy();
+        const body = Buffer.concat([Buffer.from(`{"jsonrpc":"2.0","id":${JSON.stringify(call.id)},"result":`), copy.result, Buffer.from('}')]);
+        // they count against the caller by their size: whatever the call's credits didn't cover is owed now
+        const owed = Math.ceil(body.length / Math.max(1, limits.NAMES_BYTES_PER_CREDIT)) - credits;
+        if (owed > 0) {
+          ip.calls.spend(who, owed);
+          ip.daily.spend(who, owed);
+        }
+        ip.bytes.spend(who, body.length);
+        totals.bytes += body.length;
+        count(totals.calls, call.method);
+        return send(res, 200, body, cors);
+      }
+
+      // to the paid RPC: the checked call, written afresh
+      admit(credits);
       busy++;
       let timedOut = false;
       const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, limits.TIMEOUT_MS);
       // what the answer weighed, paid for by the address whether it arrived whole or was cut off
       const meter = { bytes: 0 };
       try {
-        const up = await fetch(target, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: call.id, method: call.method, params: call.params }),
-          signal: ctl.signal,
-          redirect: 'error',
-        });
-        if (up.status === 429) {
-          await up.body?.cancel().catch(() => {});
-          warn('upstream-429', 'the paid RPC is rate-limiting plum: lower ALL_RATE / ALL_DAILY, or raise the plan');
-          throw limited(2, "plum's rpc is busy", 'upstream-429');
-        }
-        if (up.status === 401 || up.status === 403) {
-          await up.body?.cancel().catch(() => {});
-          warn('upstream-key', `the paid RPC refused its key (${up.status}): check UPSTREAM_RPC`);
-          throw new Refusal(502, -32603, "plum's rpc can't reach the network right now", { why: 'upstream-key' });
-        }
+        const up = await ask(call, ctl.signal);
         if (!up.ok) {
           // the chain's own word on a bad call (a JSON-RPC error) goes back as it came; anything else doesn't
-          const text = await readSome(up.body, 64 * 1024);
+          const text = (await readSome(up.body, 64 * 1024)).toString('utf8');
           let json = null;
           try { json = JSON.parse(text); } catch { /* not json, or longer than this */ }
           if (json?.jsonrpc === '2.0' && isObject(json.error) && !secrets.some((s) => text.includes(s.toString()))) return send(res, up.status, text, cors);
@@ -425,11 +526,8 @@ export function makeProxy({ upstream, env = process.env, limits: given = {}, now
         await relay(up.body, res, secrets, limits.MAX_ANSWER, meter);
         count(totals.calls, call.method);
       } catch (e) {
-        if (e instanceof Refusal) throw e;
-        if (timedOut) throw new Refusal(504, -32603, 'the network took too long to answer', { why: 'upstream-slow' });
-        if (gone) throw e;
-        warn('upstream-down', `the paid RPC failed: ${e?.cause?.code ?? e?.cause?.message ?? e?.message ?? e}`);
-        throw new Refusal(502, -32603, "plum's rpc couldn't reach the network: try again", { why: 'upstream-down' });
+        if (gone && !timedOut && !(e instanceof Refusal)) throw e;
+        throw failed(e, timedOut);
       } finally {
         busy--;
         clearTimeout(timer);

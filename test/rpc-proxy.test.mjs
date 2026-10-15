@@ -7,7 +7,7 @@ import { createServer, request } from 'node:http';
 import { dirname, join } from 'node:path';
 import { after, afterEach, before, beforeEach, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { Buckets, METHODS, addressKey, clientOf, makeProxy, readCall, secretsOf, upstreamOf } from '../proxy/rpc-proxy.mjs';
+import { Buckets, CREDITS, METHODS, addressKey, clientOf, creditsOf, makeProxy, readCall, secretsOf, upstreamOf } from '../proxy/rpc-proxy.mjs';
 import { NETWORKS, PLUM_RPC, client, transport } from '../src/background/rpc.js';
 import * as nfts from '../src/background/nfts.js';
 import * as stake from '../src/background/stake.js';
@@ -127,6 +127,11 @@ const post = (p, body, { origin = EXT, type = 'application/json', ip = null, hea
 let nextId = 1;
 const rpcCall = (method, params = []) => ({ jsonrpc: '2.0', id: nextId++, method, params });
 const balance = (p, opts) => post(p, rpcCall('getBalance', [A, { commitment: 'confirmed' }]), opts);
+// a DAS call: 10 credits on the paid RPC
+const assets = (p, opts) => post(p, rpcCall('getAssetsByOwner', { ownerAddress: A, page: 1, limit: 1000, displayOptions: { showCollectionMetadata: true } }), opts);
+// the validators' names, as stake.js asks for them
+const NAMES = ['Config1111111111111111111111111111111111111', { encoding: 'base64', commitment: 'confirmed', filters: [{ memcmp: { offset: 1, bytes: 'Va1idator1nfo111111111111111111111111111111' } }] }];
+const names = (p, opts) => post(p, rpcCall('getProgramAccounts', NAMES), opts);
 
 /* ------------------------------------------------------------ the wallet and the proxy agree */
 
@@ -457,6 +462,137 @@ test('each address has an allowance of bytes; a big answer is paid for afterward
   assert.equal((await balance(p, { ip: '203.0.113.20' })).status, 200, 'the debt is waited out');
 });
 
+/* ------------------------------------------------------------ what calls cost */
+
+test('calls count by what they cost on the paid RPC: 10 credits for DAS and getProgramAccounts, 1 for the rest', () => {
+  for (const m of Object.keys(CREDITS)) assert.ok(Object.hasOwn(METHODS, m), `${m} is a method plum calls`);
+  for (const m of ['getAsset', 'getAssetBatch', 'getAssetProof', 'getAssetsByOwner', 'getProgramAccounts']) assert.equal(creditsOf(m), 10, m);
+  for (const m of Object.keys(METHODS).filter((k) => !Object.hasOwn(CREDITS, k))) assert.equal(creditsOf(m), 1, m);
+  assert.equal(creditsOf('toString'), 1);
+});
+
+test("an address's rate and daily allowance count credits", async () => {
+  const p = await start({ IP_RATE: 1, IP_BURST: 25 });
+  const ip = '198.51.100.40';
+  assert.equal((await assets(p, { ip })).status, 200);
+  assert.equal((await assets(p, { ip })).status, 200);
+  const no = await assets(p, { ip });
+  assert.equal(no.status, 429, 'a DAS call takes 10 credits: 5 are left');
+  assert.match(no.json.error.message, /too many calls from your address/);
+  assert.equal(no.headers['retry-after'], '5');
+  assert.equal((await balance(p, { ip })).status, 200, 'a plain read still fits');
+  assert.equal(seen.length, 3);
+  const q = await start({ IP_DAILY: 25 });
+  for (const status of [200, 200, 429]) assert.equal((await assets(q, { ip: '198.51.100.41' })).status, status);
+  assert.equal((await balance(q, { ip: '198.51.100.41' })).status, 200);
+});
+
+test('everyone together counts credits too', async () => {
+  const p = await start({ ALL_DAILY: 25 });
+  assert.equal((await assets(p, { ip: '192.0.2.40' })).status, 200);
+  assert.equal((await assets(p, { ip: '192.0.2.41' })).status, 200);
+  const no = await assets(p, { ip: '192.0.2.42' });
+  assert.equal(no.status, 429);
+  assert.match(no.json.error.message, /plum's rpc is busy/);
+  assert.equal((await balance(p, { ip: '192.0.2.43' })).status, 200);
+  assert.equal(seen.length, 3);
+});
+
+/* ------------------------------------------------------------ the validators' names */
+
+test("the validators' names are read from the paid RPC once every NAMES_MINUTES, and everyone is answered from that copy", async () => {
+  const list = [{ pubkey: A, account: { data: ['AQID', 'base64'], executable: false, lamports: 1, owner: NAMES[0], rentEpoch: 0, space: 3 } }];
+  answer = (call) => (call.method === 'getProgramAccounts' ? { status: 200, body: { jsonrpc: '2.0', id: call.id, result: list } } : ok(call));
+  const p = await start({ NAMES_MINUTES: 60 });
+  const first = await names(p, { ip: '198.51.100.50' });
+  assert.equal(first.status, 200);
+  assert.deepEqual(first.json.result, list);
+  assert.equal(first.headers['access-control-allow-origin'], EXT);
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].call.params, NAMES, 'asked for exactly as plum asks');
+  assert.deepEqual(Object.keys(seen[0].call), ['jsonrpc', 'id', 'method', 'params']);
+  // another address, with its own id and no commitment: the same copy
+  const other = await post(p, { ...rpcCall('getProgramAccounts', [NAMES[0], { encoding: 'base64', filters: NAMES[1].filters }]), id: 'theirs' }, { ip: '198.51.100.51' });
+  assert.deepEqual(other.json, { jsonrpc: '2.0', id: 'theirs', result: list });
+  assert.equal(seen.length, 1, 'answered from the copy');
+  clock += 59 * 60_000;
+  assert.equal((await names(p, { ip: '198.51.100.52' })).status, 200);
+  assert.equal(seen.length, 1);
+  clock += 2 * 60_000;
+  assert.equal((await names(p, { ip: '198.51.100.53' })).status, 200);
+  assert.equal(seen.length, 2, 'read again once the copy is older than NAMES_MINUTES');
+  // the stake lookups are the caller's own: never from a copy
+  const byStaker = ['Stake11111111111111111111111111111111111111', { encoding: 'base64', commitment: 'confirmed', filters: [{ dataSize: 200 }, { memcmp: { offset: 12, bytes: A } }] }];
+  await post(p, rpcCall('getProgramAccounts', byStaker));
+  await post(p, rpcCall('getProgramAccounts', byStaker));
+  assert.equal(seen.length, 4);
+});
+
+test('callers asking for the names at the same time share one read', async () => {
+  let release;
+  const held = new Promise((r) => { release = r; });
+  answer = async (call) => { await held; return ok(call); };
+  const p = await start();
+  const pending = ['198.51.100.60', '198.51.100.61', '198.51.100.62'].map((ip) => names(p, { ip }));
+  while (!seen.length) await sleep(5);
+  await sleep(50);
+  assert.equal(seen.length, 1);
+  release();
+  for (const r of await Promise.all(pending)) assert.deepEqual(r.json.result, []);
+  assert.equal(seen.length, 1);
+});
+
+test('while a new read of the names fails, the last copy answers; a failed read is never kept', async () => {
+  const p = await start({ NAMES_MINUTES: 60 });
+  answer = () => ({ status: 500, type: 'text/html', body: '<html>down</html>' });
+  const none = await names(p, { ip: '198.51.100.70' });
+  assert.equal(none.status, 502);
+  assert.doesNotMatch(none.text, /html/);
+  answer = (call) => ({ status: 200, body: { jsonrpc: '2.0', id: call.id, error: { code: -32010, message: 'excluded from account secondary indexes' } } });
+  const c = rpcCall('getProgramAccounts', NAMES);
+  const refused = await post(p, c, { ip: '198.51.100.71' });
+  assert.equal(refused.status, 200);
+  assert.deepEqual(refused.json, { jsonrpc: '2.0', id: c.id, error: { code: -32010, message: 'excluded from account secondary indexes' } }, "the chain's own word comes back");
+  answer = ok;
+  assert.deepEqual((await names(p, { ip: '198.51.100.72' })).json.result, []);
+  assert.equal(seen.length, 3, 'nothing that failed was kept');
+  clock += 61 * 60_000;
+  for (const bad of [() => ({ status: 429, body: 'slow down' }), () => ({ status: 503, body: 'nope' }), (call) => ({ status: 200, body: { jsonrpc: '2.0', id: call.id, error: { code: -32603, message: 'internal' } } })]) {
+    answer = bad;
+    const old = await names(p, { ip: '198.51.100.73' });
+    assert.equal(old.status, 200);
+    assert.deepEqual(old.json.result, []);
+  }
+  assert.equal(seen.length, 6, 'each one tried a new read first');
+});
+
+test('the names count against the address that asks by their size; the paid RPC only counts each read', async () => {
+  const list = Array.from({ length: 50 }, (_, i) => ({ pubkey: A, account: { data: ['A'.repeat(1000), 'base64'], lamports: i } }));
+  answer = (call) => (call.method === 'getProgramAccounts' ? { status: 200, body: { jsonrpc: '2.0', id: call.id, result: list } } : ok(call));
+  const p = await start({ NAMES_BYTES_PER_CREDIT: 1000, NAMES_MINUTES: 1, IP_RATE: 1, IP_BURST: 30, ALL_DAILY: 25 });
+  const first = await names(p, { ip: '198.51.100.80' });
+  assert.equal(first.status, 200);
+  const size = Math.ceil(Buffer.byteLength(first.text) / 1000);
+  assert.ok(size > 50, `${size} credits`);
+  // 30, less the call's 10, less the rest of its size: in debt until that's waited out
+  const owe = await balance(p, { ip: '198.51.100.80' });
+  assert.equal(owe.status, 429);
+  assert.equal(Number(owe.headers['retry-after']), size - 29);
+  // the copy costs the paid RPC nothing: after four more addresses' names, a DAS call still fits in ALL_DAILY's 25
+  for (const ip of ['198.51.100.81', '198.51.100.82', '198.51.100.83', '198.51.100.84']) assert.equal((await names(p, { ip })).status, 200);
+  assert.equal((await assets(p, { ip: '198.51.100.85' })).status, 200);
+  assert.equal((await assets(p, { ip: '198.51.100.86' })).status, 429);
+  assert.equal(seen.length, 2);
+  clock += (size - 29) * 1000;
+  assert.equal((await balance(p, { ip: '198.51.100.80' })).status, 200, 'once the debt is waited out');
+  // past everyone's daily allowance the copy isn't read again: the old one answers
+  clock += 61_000;
+  assert.equal((await names(p, { ip: '198.51.100.87' })).status, 200);
+  assert.equal(seen.filter((s) => s.call.method === 'getProgramAccounts').length, 1);
+  p.report();
+  assert.match(logged.at(-1), /: 8 calls \(getProgramAccounts 6, getAssetsByOwner 1, getBalance 1\) for 21 credits, /);
+});
+
 /* ------------------------------------------------------------ what the paid RPC says */
 
 test("the chain's own errors come back as they are", async () => {
@@ -597,7 +733,7 @@ test('limits come from the environment by name', async () => {
   assert.equal(p.limits.IP_RATE, 2);
   assert.equal(p.limits.ALL_DAILY, 1000);
   assert.equal(p.limits.MAX_BODY, 32 * 1024);
-  assert.equal(p.limits.IP_BURST, 120);
+  assert.equal(p.limits.IP_BURST, 200);
   assert.equal(p.fingerprint.length, 10);
   await p.close();
 });
@@ -619,6 +755,10 @@ test('token buckets refill, go into debt, and forget the longest idle past their
   t += 10_000;
   b.sweep();
   assert.equal(b.size, 0);
+  // a cost above the burst can never be had in full, so it takes the whole burst
+  const small = new Buckets(1, 4, { now: () => t });
+  assert.equal(small.take('x', 10), 0);
+  assert.equal(small.take('x', 10), 4);
 });
 
 test('a call is read once and checked: id, method and params', () => {
