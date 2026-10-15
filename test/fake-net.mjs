@@ -60,6 +60,7 @@ export function fakeNet() {
     fees: { fastestFee: 20, halfHourFee: 10, hourFee: 5, economyFee: 2, minimumFee: 1 },
     broadcast: [], // raw hex
     txs: new Map(), // txid -> [{ scriptpubkey (hex), value }]: the outputs /tx/<txid> answers with
+    raw: new Map(), // txid -> raw hex: what /tx/<txid>/hex answers (a previous transaction, for a hardware wallet)
   };
   // ordinals.com's recursive endpoints: 'txid:vout' -> { inscriptions: [id], runes: { NAME: { amount, divisibility } } },
   // inscription id -> satpoint; `down` makes it answer 503
@@ -145,6 +146,7 @@ export function fakeNet() {
       if ((m = /^\/address\/([^/]+)\/txs$/.exec(path))) return reply([]);
       if ((m = /^\/tx\/([0-9a-f]{64})\/status$/.exec(path))) return reply({ confirmed: true });
       if ((m = /^\/tx\/([0-9a-f]{64})$/.exec(path))) return btc.txs.has(m[1]) ? reply({ txid: m[1], vout: btc.txs.get(m[1]) }) : reply('Transaction not found', 404);
+      if ((m = /^\/tx\/([0-9a-f]{64})\/hex$/.exec(path))) return btc.raw.has(m[1]) ? reply(btc.raw.get(m[1])) : reply('Transaction not found', 404);
       return reply({ message: 'not found' }, 404);
     }
     if (BLOCKSCOUT[u.host]) {

@@ -18,10 +18,10 @@ export const pk = () => Keypair.generate().publicKey;
  * Start the background page on a fake browser and a fake chain. Returns everything a test needs.
  * `fetch` is stubbed to fail (no network); tests that need Jupiter replace globalThis.fetch themselves.
  */
-export async function boot({ balance = 10_000_000_000n, phish = { block: ['evil-drainer.com'], allow: [], at: Date.now() } } = {}) {
+export async function boot({ balance = 10_000_000_000n, phish = { block: ['evil-drainer.com'], allow: [], at: Date.now() }, balances = {} } = {}) {
   const fake = fakeBrowser();
   globalThis.browser = fake.browser;
-  const chain = fakeChain({ [ME]: balance });
+  const chain = fakeChain({ [ME]: balance, ...balances });
   const rpcMod = await import('../../src/background/rpc.js');
   rpcMod.transport.post = (url, body) => chain.post(url, body);
   globalThis.fetch = async () => { throw new Error('no network in tests'); };
