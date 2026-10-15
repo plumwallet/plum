@@ -971,7 +971,8 @@ async function remember(chain, to) {
 async function recipientChecks(chain, to, from) {
   const out = [];
   const past = (await recents())[chain] ?? [];
-  const own = (await W.wallets()).map((w) => w.chains[chain]?.address).filter(Boolean);
+  // (a wallet's bc1p address is its own too)
+  const own = (await W.wallets()).flatMap((w) => [w.chains[chain]?.address, chain === 'btc' ? w.chains.btc?.taproot?.address : null]).filter(Boolean);
   const norm = (a) => (chain === 'sol' ? a : a.toLowerCase());
   const known = [...new Set([...past, ...own].map(norm))];
   const head = chain === 'eth' ? 6 : chain === 'btc' ? 7 : 4;
@@ -1110,6 +1111,7 @@ async function prepareBtcSend({ to, amount, speed = 'normal', max = false }) {
   const dest = String(to ?? '').trim();
   B.addressScript(dest);
   const warnings = await recipientChecks('btc', dest, from);
+  if (dest === wallet.chains.btc.taproot?.address) warnings.push({ level: 'warn', text: "that's this wallet's own taproot address: the bitcoin stays yours, less the fee" });
   const raw = max ? null : parseUnits(amount, 8);
   if (raw != null && raw <= 0n) throw fail('type an amount above zero');
   // coins from both addresses, the ones carrying inscriptions or runes kept out (btc-send.js)

@@ -100,3 +100,16 @@ test('an imported Bitcoin key: its bc1q and bc1p addresses (the key itself on th
   assert.deepEqual((await ok('state')).wallets.find((x) => x.id === w.id).chains.btc, w.chains.btc);
   await ok('wallet.remove', { id: w.id });
 });
+
+test("sending to the wallet's own bc1p address: a warning, and the address counts as one plum knows", async () => {
+  const { fakeNet } = await import('./fake-net.mjs');
+  const net = fakeNet();
+  const real = globalThis.fetch;
+  globalThis.fetch = net.fetch;
+  try {
+    net.btc.utxos.set(SEGWIT, [{ txid: '77'.repeat(32), vout: 0, value: 90_000 }]);
+    const own = await ok('send.prepare', { chain: 'btc', to: TR, amount: '0.0001' });
+    assert.ok(own.warnings.some((w) => w.level === 'warn' && /own taproot address/.test(w.text)), JSON.stringify(own.warnings));
+    assert.ok(!own.warnings.some((w) => /haven't sent to this address/.test(w.text)), 'its own address is known');
+  } finally { globalThis.fetch = real; }
+});
