@@ -1,0 +1,21 @@
+/* Ledgers (ledger.js): the device typed at the text's size, its frame grey, the words on its screen in the colour of what
+ * plum is waiting for (white: ready; gold: something to do; the leaf's green: approve it there; red: a no). */
+.hw-art-box { display: grid; justify-items: center; overflow: hidden; padding: 2px 0; }
+/* on a surface of its own (opacity just under 1), so its one-pixel strokes are smoothed in grey, without colour fringes */
+.hw-art { margin: 0; white-space: pre; line-height: 1.2; color: var(--soft); user-select: none; opacity: 0.999; }
+.hw-art .hw-f { color: var(--soft); }
+.hw-art .hw-b { color: var(--mute); }
+.hw-art .hw-b.lit { color: var(--go); font-weight: 700; }
+.hw-art .hw-s { color: var(--ink); font-weight: 700; }
+.hw-art .hw-c { color: var(--gold); }
+.hw-art.hw-go .hw-s { color: var(--go); }
+.hw-art.hw-wait .hw-s { color: var(--gold); }
+.hw-art.hw-no .hw-s { color: var(--red); }
+.hw-line { line-height: 20px; color: var(--ink-2); }
+.hw-line.hw-go { color: var(--go); }
+.hw-line.hw-wait { color: var(--gold); }
+.hw-line.hw-no { color: var(--red); }
+.hw-box > .btn-go { justify-self: start; }
+.hw-check { justify-items: center; }
+.hw-check > .btn { justify-self: center; }
+.toggle .dim { margin-left: 1ch; font-weight: 400; }

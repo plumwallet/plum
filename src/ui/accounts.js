@@ -10,6 +10,7 @@ import { busyButton, h } from './dom.js';
 import { active, ctx, errLine, forget, go, redraw, screen, show, showErr } from './app.js';
 import { taprootLine } from './btc.js';
 import { createWallet, importKey, importPhrase } from './flows.js';
+import { addLedger, checkOnLedger, hidAvailable, isLedgerWallet } from './ledger.js';
 import { CHAIN, addressBlock, box, chainsOf, chip, iconArt, iconPicker, secretField, seg } from './parts.js';
 
 /** The tools of one wallet or account at a time: { kind: 'wallet' | 'account', id } or null. */
@@ -22,11 +23,13 @@ export function accountsScreen({ open = null, stay = false } = {}) {
     const wallets = S.wallets.filter((w) => w.account === acct.id);
     if (!wallets.length) return null;
     const keys = acct.kind === 'keys';
+    const ledger = acct.kind === 'ledger';
     const opened = open?.kind === 'account' && open.id === acct.id;
     const manage = keys ? null : h('button', { class: 'mini', type: 'button', title: 'manage this account', onclick: () => again(opened ? null : { kind: 'account', id: acct.id }) }, opened ? 'close' : '..');
-    const side = h('div', { class: 'head-side' }, acct.words ? h('span', { class: 'dim' }, `${acct.words} words`) : null, acct.backedUp === false ? chip('not backed up', 'hot') : null, manage);
-    const add = keys ? null : h('button', { class: 'btn btn-sm add-wallet', type: 'button', title: `the next wallet of ${acct.name}'s recovery phrase` }, '+ new wallet');
-    if (add) busyButton(add, async () => { try { ctx.S = await call('wallet.add', { account: acct.id }); forget(); again(null); } catch (e) { showErr(err, e); } });
+    const side = h('div', { class: 'head-side' }, acct.words ? h('span', { class: 'dim' }, `${acct.words} words`) : null, ledger ? h('span', { class: 'dim' }, 'hardware') : null, acct.backedUp === false ? chip('not backed up', 'hot') : null, manage);
+    const add = keys ? null : h('button', { class: 'btn btn-sm add-wallet', type: 'button', title: ledger ? `more wallets from ${acct.name}` : `the next wallet of ${acct.name}'s recovery phrase` }, ledger ? '+ more from this ledger' : '+ new wallet');
+    if (add && ledger) add.addEventListener('click', () => addLedger({ account: acct.id }));
+    else if (add) busyButton(add, async () => { try { ctx.S = await call('wallet.add', { account: acct.id }); forget(); again(null); } catch (e) { showErr(err, e); } });
     return box(acct.name, { tone: wallets.some((w) => w.id === current.id) ? 'ink' : 'soft', side, className: 'acct-box' },
       opened ? accountTools(acct, wallets, err, again) : null,
       h('div', { class: 'accts' }, wallets.map((w) => walletRow(w, open, err, again))),
@@ -36,7 +39,8 @@ export function accountsScreen({ open = null, stay = false } = {}) {
     h('div', { class: 'menu' },
       menuRow('+ new account', 'a new recovery phrase', () => createWallet()),
       menuRow('+ import an account', '12 or 24 words', () => importPhrase()),
-      menuRow('+ import a private key', 'one wallet', () => importKey())));
+      menuRow('+ import a private key', 'one wallet', () => importKey()),
+      menuRow('+ connect a ledger', hidAvailable() ? 'hardware wallet' : 'chrome, brave, edge', () => addLedger())));
   (stay ? redraw : show)(...screen('accounts', () => go.home(), ...boxes, menu, err));
 }
 
@@ -69,24 +73,26 @@ function walletTools(w, err, again, row) {
   const name = h('input', { class: 'input', value: w.name, maxlength: '24', autocomplete: 'off', spellcheck: 'false' });
   const save = h('button', { class: 'btn-go btn-sm', type: 'button' }, 'rename');
   busyButton(save, async () => { try { ctx.S = await call('wallet.rename', { id: w.id, name: name.value }); again({ kind: 'wallet', id: w.id }); } catch (e) { showErr(err, e); } });
-  // one chain's key at a time
+  // one chain's key at a time (a Ledger's never leave it)
+  const hw = isLedgerWallet(w);
   let keyChain = chains[0];
   const reveal = h('div');
   const drawReveal = () => reveal.replaceChildren(secretReveal((password) => call('wallet.export', { id: w.id, chain: keyChain, password }), {
     label: `${CHAIN[keyChain].name} private key`, warn: 'anyone with this key owns this wallet. Never paste it into a website.',
   }));
-  drawReveal();
+  if (hw) reveal.replaceChildren(h('p', { class: 'dim' }, 'its keys stay on your Ledger: plum never holds them.'));
+  else drawReveal();
   const rm = h('button', { class: 'btn btn-sm danger', type: 'button' }, 'remove');
   busyButton(rm, async () => {
-    if (rm.dataset.armed !== '1') { rm.dataset.armed = '1'; rm.textContent = w.account === 'keys' ? 'erase its key? click again' : 'hide it? click again'; return; }
+    if (rm.dataset.armed !== '1') { rm.dataset.armed = '1'; rm.textContent = hw ? 'forget it? click again' : w.account === 'keys' ? 'erase its key? click again' : 'hide it? click again'; return; }
     try { ctx.S = await call('wallet.remove', { id: w.id }); forget(); again(null); } catch (e) { showErr(err, e); }
   });
   return h('div', { class: 'acct-tools' },
     icons.node,
-    h('div', { class: 'addrs' }, chains.map((c) => h('div', { class: 'addr-line' }, h('span', { class: 'label' }, CHAIN[c].name), addressBlock(w.chains[c].address, { copy: true }))), taprootLine(w)),
+    h('div', { class: 'addrs' }, chains.map((c) => h('div', { class: 'addr-line' }, h('span', { class: 'label' }, CHAIN[c].name), addressBlock(w.chains[c].address, { copy: true }), hw ? checkOnLedger(c, w.chains[c].address) : null)), taprootLine(w)),
     h('div', { class: 'row' }, name, save),
     h('div', { class: 'stack tight' },
-      chains.length > 1 ? seg(chains.map((c) => [c, CHAIN[c].name]), keyChain, (c) => { keyChain = c; drawReveal(); }, { label: 'which key' }) : null,
+      chains.length > 1 && !hw ? seg(chains.map((c) => [c, CHAIN[c].name]), keyChain, (c) => { keyChain = c; drawReveal(); }, { label: 'which key' }) : null,
       reveal),
     h('div', { class: 'row' }, rm));
 }
@@ -97,13 +103,14 @@ function accountTools(acct, wallets, err, again) {
   const save = h('button', { class: 'btn-go btn-sm', type: 'button' }, 'rename');
   busyButton(save, async () => { try { ctx.S = await call('account.rename', { id: acct.id, name: name.value }); again({ kind: 'account', id: acct.id }); } catch (e) { showErr(err, e); } });
   const rm = h('button', { class: 'btn btn-sm danger', type: 'button' }, 'remove this account');
+  const ledger = acct.kind === 'ledger';
   busyButton(rm, async () => {
-    if (rm.dataset.armed !== '1') { rm.dataset.armed = '1'; rm.textContent = `erase its phrase and ${wallets.length} wallet${wallets.length === 1 ? '' : 's'}? click again`; return; }
+    if (rm.dataset.armed !== '1') { rm.dataset.armed = '1'; rm.textContent = `${ledger ? 'forget' : 'erase its phrase and'} ${ledger ? 'its ' : ''}${wallets.length} wallet${wallets.length === 1 ? '' : 's'}? click again`; return; }
     try { ctx.S = await call('account.remove', { id: acct.id }); forget(); again(null); } catch (e) { showErr(err, e); }
   });
   return h('div', { class: 'acct-tools acct-level' },
     h('div', { class: 'row' }, name, save),
-    secretReveal((password) => call('account.phrase', { id: acct.id, password }), { label: 'recovery phrase', warn: `these words are every wallet in ${acct.name}. Write them on paper; never type them into a website.` }),
+    ledger ? h('p', { class: 'dim' }, "its recovery phrase is on your Ledger alone: plum never had it.") : secretReveal((password) => call('account.phrase', { id: acct.id, password }), { label: 'recovery phrase', warn: `these words are every wallet in ${acct.name}. Write them on paper; never type them into a website.` }),
     h('div', { class: 'row' }, rm));
 }
 

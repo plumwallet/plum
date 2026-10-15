@@ -7,6 +7,7 @@ import { call, keepAlive } from './api.js';
 import { BTC_TITLES, btcAsk, btcBody, btcPreview } from './btc-approve.js';
 import { busyButton, h, mount } from './dom.js';
 import { netLoud } from './evm.js';
+import { deviceBox, ledgerNote } from './ledger.js';
 import { CHAIN, box, chip, kv, netChip, previewBlock, riskBanner, secretField, spinner, warnings } from './parts.js';
 import './scrollbar.js';
 
@@ -145,20 +146,26 @@ async function render() {
   // a site that floods you: answer all of its requests "no" at once
   const rejectSite = view.siteQueue > 1 ? h('button', { class: 'btn btn-sm danger' }, `reject all ${view.siteQueue} from ${view.site}`) : null;
   rejectSite?.addEventListener('click', async () => { try { await call('approval.rejectSite', { id: view.id }); } finally { next(); } });
+  // a Ledger signs after you approve here: its state, live, until it has answered
+  const device = view.ledger ? deviceBox(view.ledger.app, { hidden: true }) : null;
   busyButton(approve, async () => {
     err.hidden = true;
     if (!armed || pressedAt < armedAt) return;
+    device?.watch();
     try {
       await call('approval.resolve', { id: view.id, approve: true, ignoreRisk: acked });
+      device?.stop();
       next();
-    } catch (e) { showErr(err, e); }
+    } catch (e) { if (!device?.failed(e)) showErr(err, e); }
   });
 
   mount(app, head(view), h('main', { class: 'screen approve' },
     riskBanner(view.risk),
     siteBox(view),
+    view.ledger ? ledgerNote(view) : null,
     view.unlocked ? null : unlockBox(() => render()),
     body,
+    device?.node,
     h('div', { class: 'ack-row', hidden: !risky }, ack),
     err,
     h('div', { class: 'actions answer' }, reject, approve),

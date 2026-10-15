@@ -13,6 +13,7 @@ import { btcAddressOf, btcReceivePick } from './btc.js';
 import { evmRpcField, netTag, networkErrors, networkHoldings, networkCoins, networkRow } from './evm.js';
 import { evmSwapScreen, swapNetSeg, swapNetwork } from './evm-swap.js';
 import { backupLater, welcome } from './flows.js';
+import { APP, checkOnLedger, deviceBox, isLedgerWallet, ledgerFromUrl } from './ledger.js';
 import { CHAIN, actions, addressBlock, box, chainsOf, coinMark, iconArt, kv, previewBlock, rule, secretField, seg, spinner } from './parts.js';
 import { qrAscii } from './qr.js';
 import './scrollbar.js';
@@ -336,20 +337,25 @@ function review(prep, { kind, back }) {
   const next = h('button', { class: 'btn-go block lg', type: 'button', dataset: { busyText: 'signing' }, disabled: dangers }, kind === 'swap' ? 'swap it ->' : 'send it ->');
   ack.addEventListener('click', () => { const on = !ack.classList.contains('on'); ack.classList.toggle('on', on); ack.setAttribute('aria-pressed', String(on)); next.disabled = !on; });
   const err = errLine();
+  // a Ledger signs it after this: its state, live, while plum waits on it
+  const device = isLedgerWallet(active()) ? deviceBox(APP[prep.chain ?? 'sol'], { hidden: true }) : null;
   busyButton(next, async () => {
     err.hidden = true;
+    device?.watch();
     try {
       const done = await call(kind === 'swap' ? 'swap.submit' : 'send.submit', { id: prep.id });
+      device?.stop();
       forget();
       sentScreen(done);
-    } catch (e) { showErr(err, e); }
+    } catch (e) { if (!device?.failed(e)) showErr(err, e); }
   });
   const summary = kind === 'send'
     ? box('sending', { tone: 'ink' }, kv('amount', `${prep.amount} ${prep.symbol}`), kv('to', short(prep.to, 6)), prep.netTitle ? kv('on', prep.netTitle.toLowerCase(), 'loud') : kv('on', CHAIN[prep.chain ?? 'sol'].name), addressBlock(prep.to))
     : box('swapping', { tone: 'ink' }, kv('you pay', `${prep.inAmount} ${prep.inSymbol}`), kv('you get (about)', `${prep.outAmount} ${prep.outSymbol}`), kv('at least', `${prep.minOut} ${prep.outSymbol}`));
   show(...screen('review', null, summary,
     previewBlock(prep.preview, { extra: prep.warnings }),
-    dangers ? ack : null, err, actions(back, next)));
+    device ? h('p', { class: 'fine' }, prep.chain === 'btc' ? 'your Ledger shows this send too: sign it there after this. It also lists the change coming back to this wallet, as a second output to its own address.' : 'your Ledger shows this too: approve it there after this.') : null,
+    device?.node, dangers ? ack : null, err, actions(back, next)));
 }
 
 /** After a send: plum's log of it, the last line turning until it lands. */
@@ -396,7 +402,8 @@ function receiveScreen(chain = null, btcKind = 'p2wpkh') {
     h('div', { class: 'qr-box' }, qrAscii(address)),
     addressBlock(address, { copy: true }),
     on === 'eth' ? h('p', { class: 'fine center' }, 'the same address on ethereum, base, arbitrum and polygon') : null,
-    cp));
+    cp,
+    isLedgerWallet(w) ? checkOnLedger(on, address) : null));
 }
 
 /* ------------------------------------------------------------ swap (Jupiter, on Solana) */
@@ -608,7 +615,7 @@ async function boot() {
   try { await refresh(); } catch (e) { mount(root, h('div', { class: 'note err' }, e.message)); return; }
   if (!ctx.S.hasVault) welcome();
   else if (!ctx.S.unlocked) unlock();
-  else home();
+  else if (!ledgerFromUrl()) home();
 }
 
 boot();
