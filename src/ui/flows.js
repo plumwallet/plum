@@ -237,5 +237,5 @@ function keyDetails({ first, secret, info }) {
     } catch (e) { showErr(err, e); }
   });
   step(first, 'import a private key', 'step 2 of 2', { back: () => importKey({ first }), next },
-    who.icon, kv(CHAIN[info.chain].name, short(info.address, 6)), ...who.nodes, ...(pw ? pw.nodes : []), err);
+    who.icon, kv(CHAIN[info.chain].name, short(info.address, 6)), info.taproot ? kv('bitcoin taproot', short(info.taproot, 6)) : null, ...who.nodes, ...(pw ? pw.nodes : []), err);
 }

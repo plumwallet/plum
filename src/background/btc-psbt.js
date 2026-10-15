@@ -37,7 +37,7 @@ export function sighashDanger(type, index) {
  * The review of a PSBT, for the approval window. Throws when plum refuses it outright (an input that isn't the
  * wallet's asked for, a lie about what an input spends, a script path...).
  *   owner     { segwit, taproot, taprootKey (x-only internal key, hex) }: the wallet's addresses
- *   toSign    [{ index, address }] the site asked for, or null for every input of the wallet's
+ *   toSign    [{ index, address, sighash? }] the site asked for, or null for every input of the wallet's
  *   chain     Map 'txid:vout' -> { value, script } | null from the chain, or null when the chain couldn't be read
  *   contents  Map 'txid:vout' -> { inscriptions: [{ id, offset }], runes: [{ name, amount }] } for the wallet's inputs
  *   rates     today's fee rates { fast, normal, slow } or null
@@ -76,7 +76,7 @@ export function reviewPsbt(p, { owner, toSign = null, chain = null, contents = n
   // the wallet's
   const asked = toSign ?? inputs.filter((x) => x.mine).map((x) => ({ index: x.index, address: x.mine === 'p2tr' ? owner.taproot : owner.segwit }));
   if (!asked.length) throw fail("none of this PSBT's inputs are this wallet's: there's nothing for plum to sign");
-  for (const { index, address } of asked) {
+  for (const { index, address, sighash } of asked) {
     const x = inputs[index];
     if (!Number.isInteger(index) || !x) throw fail(`the site asked plum to sign input ${index}, which this PSBT doesn't have`);
     if (address !== owner.segwit && address !== owner.taproot) throw fail(`the site asked plum to sign for ${String(address).slice(0, 90)}, which isn't this wallet's address`);
@@ -89,7 +89,9 @@ export function reviewPsbt(p, { owner, toSign = null, chain = null, contents = n
       if (v.tapInternalKey && hex(v.tapInternalKey) !== owner.taprootKey) throw fail(`the PSBT says input ${index}'s taproot key is another one: plum won't sign it`);
     }
     if (v.redeemScript || v.witnessScript) throw fail(`input ${index} carries a script plum's address doesn't use: plum won't sign it`);
-    const type = x.sighash ?? (x.mine === 'p2tr' ? SIGHASH.DEFAULT : SIGHASH.ALL);
+    // a sighash type the site asks for beside the PSBT must agree with the one the PSBT carries
+    if (sighash != null && x.sighash != null && sighash !== x.sighash) throw fail(`the site asks for sighash type ${sighash} on input ${index}, but the PSBT says ${x.sighash}: plum won't sign it`);
+    const type = sighash ?? x.sighash ?? (x.mine === 'p2tr' ? SIGHASH.DEFAULT : SIGHASH.ALL);
     if (!(x.mine === 'p2tr' ? V1_TYPES : V0_TYPES).includes(type)) throw fail(`input ${index} asks for sighash type ${type}, which plum doesn't sign`);
     if ((type & 3) === SIGHASH.SINGLE && index >= outputs.length) throw fail(`input ${index} asks for SIGHASH_SINGLE but there's no output ${index}: plum won't sign that`);
     x.sign = true;

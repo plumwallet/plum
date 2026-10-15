@@ -1,9 +1,11 @@
-// Plum in the page, twice over: a Wallet Standard wallet, so it shows up in every Solana site's "connect wallet" list
-// (the wallet adapter, anything built on @wallet-standard); and an EIP-1193 Ethereum provider,
-// announced through EIP-6963, so it shows up in every Ethereum site's list (wagmi, RainbowKit, Web3Modal, ConnectKit).
+// Plum in the page, three times over: a Wallet Standard wallet, so it shows up in every Solana site's "connect wallet"
+// list (the wallet adapter, anything built on @wallet-standard); an EIP-1193 Ethereum provider,
+// announced through EIP-6963, so it shows up in every Ethereum site's list (wagmi, RainbowKit, Web3Modal, ConnectKit);
+// and a Bitcoin provider by WBIP-004 and the Wallet Standard's bitcoin:* features (bitcoin.js).
 // It holds no secret and decides nothing: each call goes to the background through the content script, and you
 // approve it in plum's own window. It never pretends to be another wallet (no window.phantom, no window.solana, and it
 // never takes window.ethereum).
+import { startBitcoin } from './bitcoin.js';
 import { ICON } from './icon.js';
 
 (() => {
@@ -50,7 +52,7 @@ import { ICON } from './icon.js';
     if (e.source !== window) return;
     const d = e.data;
     if (!d || d.channel !== CHANNEL || d.dir !== 'to-page') return;
-    if (d.event) { refresh(); refreshEvm(); return; }
+    if (d.event) { refresh(); refreshEvm(); bitcoin.refresh(); return; }
     const w = waiting.get(d.id);
     if (!w) return;
     waiting.delete(d.id);
@@ -260,4 +262,7 @@ import { ICON } from './icon.js';
   announce();
   // plum can always reach Ethereum mainnet
   setTimeout(() => evmEmit('connect', { chainId: '0x1' }), 0);
+
+  /* -------------------------------------------------- Bitcoin (bitcoin.js) */
+  const bitcoin = startBitcoin({ call, icon: ICON });
 })();

@@ -19,7 +19,8 @@ import * as W from './wallet.js';
 export const CODES = { USER_REJECTION: -32000, METHOD_NOT_SUPPORTED: -32001, ACCESS_DENIED: -32002, METHOD_NOT_FOUND: -32601, INVALID_PARAMS: -32602, INTERNAL_ERROR: -32603 };
 const err = (message, code = CODES.INVALID_PARAMS) => Object.assign(new Error(message), { code });
 
-export const NETWORK = { bitcoin: { name: 'Mainnet' } };
+// sats-connect's network shape (apps read every field of it): plum is on Bitcoin mainnet only
+export const NETWORK = { bitcoin: { name: 'Mainnet' }, stacks: { name: 'mainnet' }, spark: { name: 'mainnet' } };
 /** What plum answers, by sats-connect's names. */
 export const METHODS = ['getInfo', 'getAddresses', 'getAccounts', 'getBalance', 'signMessage', 'signPsbt', 'sendTransfer', 'wallet_connect', 'wallet_disconnect',
   'wallet_getAccount', 'wallet_requestPermissions', 'wallet_renouncePermissions', 'wallet_getNetwork', 'wallet_changeNetwork', 'wallet_getWalletType'];
@@ -76,24 +77,26 @@ function psbtBytes(s) {
   try { return b64decode(s); } catch { throw err("the PSBT isn't base64"); }
 }
 
-/** sats-connect's signInputs ({ address: [input indexes] }), or its older inputsToSign ([{ address, signingIndexes }]):
- * [{ index, address }], or null for "every input of the wallet's". */
+/** sats-connect's signInputs ({ address: [input indexes] }), or its older inputsToSign ([{ address, signingIndexes,
+ * sigHash }], which the Wallet Standard's inputsToSign becomes): [{ index, address, sighash? }], or null for "every
+ * input of the wallet's". */
 function inputsAsked(p, count) {
   const pairs = [];
   if (p.signInputs != null) {
     if (typeof p.signInputs !== 'object' || Array.isArray(p.signInputs)) throw err('signInputs is malformed');
-    for (const [address, list] of Object.entries(p.signInputs)) pairs.push([address, list]);
+    for (const [address, list] of Object.entries(p.signInputs)) pairs.push([address, list, undefined]);
   } else if (p.inputsToSign != null) {
-    if (!Array.isArray(p.inputsToSign)) throw err('inputsToSign is malformed');
-    for (const x of p.inputsToSign) pairs.push([x?.address, x?.signingIndexes]);
+    if (!Array.isArray(p.inputsToSign) || p.inputsToSign.length > count) throw err('inputsToSign is malformed');
+    for (const x of p.inputsToSign) pairs.push([x?.address, x?.signingIndexes, x?.sigHash]);
   } else return null;
   const out = [];
-  for (const [address, list] of pairs) {
+  for (const [address, list, sighash] of pairs) {
     if (typeof address !== 'string' || !Array.isArray(list) || list.length > count) throw err('the inputs to sign are malformed');
+    if (sighash != null && (!Number.isInteger(sighash) || sighash < 0 || sighash > 0xff)) throw err('a sighash type asked for is malformed');
     for (const i of list) {
       if (!Number.isInteger(i) || i < 0 || i >= count) throw err(`there's no input ${String(i).slice(0, 12)} to sign`);
       if (out.some((x) => x.index === i)) throw err(`input ${i} is asked for twice`);
-      out.push({ index: i, address });
+      out.push(sighash == null ? { index: i, address } : { index: i, address, sighash });
     }
   }
   if (!out.length) throw err('no inputs to sign');
@@ -152,7 +155,10 @@ export function bitcoinSites({ approval, trusted, trust, untrust, riskOf, openWe
       const purposes = purposesOf(p);
       const risk = await riskOf(origin);
       if (connected && risk.level !== 'blocked') await trust(origin, me, 'btc');
-      else await approval({ chain: 'btc', kind: 'btcConnect', origin, risk, account: me, ctx, network: 'mainnet', btcView: { purposes, note: siteLine(p.message) } });
+      else {
+        const shown = purposes.map((x) => ({ purpose: x, address: x === 'payment' ? me : w.chains.btc.taproot?.address ?? null })).filter((x) => x.address);
+        await approval({ chain: 'btc', kind: 'btcConnect', origin, risk, account: me, ctx, network: 'mainnet', btcView: { purposes, shown, note: siteLine(p.message) } });
+      }
       const now = await W.walletOf('btc', me);
       const list = addressesOf(now ?? w, purposes);
       if (method === 'getAccounts') return list;

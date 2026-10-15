@@ -9,6 +9,7 @@ import { call, keepAlive } from './api.js';
 import { active, accountOf, ctx, errLine, field, forget, go, header, redraw, refresh, root, screen, show, showErr } from './app.js';
 import { logo } from './art.js';
 import { busyButton, h, mount } from './dom.js';
+import { btcAddressOf, btcReceivePick } from './btc.js';
 import { backupLater, welcome } from './flows.js';
 import { CHAIN, actions, addressBlock, box, chainsOf, coinMark, iconArt, kv, previewBlock, rule, secretField, seg, spinner } from './parts.js';
 import { qrAscii } from './qr.js';
@@ -368,11 +369,12 @@ function sentScreen({ signature, explorer, chain = 'sol' }) {
 
 /* ------------------------------------------------------------ receive */
 
-function receiveScreen(chain = null) {
+function receiveScreen(chain = null, btcKind = 'p2wpkh') {
   const w = active();
   const chains = chainsOf(w);
   const on = chains.includes(chain) ? chain : chains[0];
-  const address = w.chains[on].address;
+  // Bitcoin has two: bc1q and bc1p (btc.js)
+  const address = on === 'btc' ? btcAddressOf(w, btcKind) : w.chains[on].address;
   const cp = h('button', { class: 'btn-go block', type: 'button' }, 'copy address');
   cp.addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(address); } catch { return; }
@@ -382,6 +384,7 @@ function receiveScreen(chain = null) {
   const pick = chains.length > 1 ? h('div', { class: 'row centred' }, seg(chains.map((c) => [c, CHAIN[c].name]), on, (c) => receiveScreen(c), { label: 'which chain' })) : null;
   (chain ? redraw : show)(...screen('receive', () => home(),
     pick,
+    on === 'btc' ? btcReceivePick(w, btcKind, (k) => receiveScreen('btc', k)) : null,
     h('div', { class: 'qr-box' }, qrAscii(address)),
     addressBlock(address, { copy: true }),
     cp));
@@ -577,7 +580,7 @@ async function settingsScreen(stay = false) {
     sitesList.replaceChildren(...list.map((x) => {
       const rm = h('button', { class: 'mini', type: 'button' }, 'revoke');
       rm.addEventListener('click', async () => { await call('sites.revoke', { origin: x.origin }); settingsScreen(true); });
-      const on = [x.accounts?.length ? 'sol' : null, x.evm?.length ? 'eth' : null].filter(Boolean).join(' ');
+      const on = [x.accounts?.length ? 'sol' : null, x.evm?.length ? 'eth' : null, x.btc?.length ? 'btc' : null].filter(Boolean).join(' ');
       return h('div', { class: 'site' }, h('b', null, new URL(x.origin).host), h('span', { class: 'chain-tag' }, on), h('span', { class: 'dim' }, ago(Math.floor(x.lastUsed / 1000))), rm);
     }));
   } catch (e) { sitesList.replaceChildren(h('span', { class: 't-red' }, e.message)); }

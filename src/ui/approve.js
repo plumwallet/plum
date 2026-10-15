@@ -4,6 +4,7 @@
 // window loses focus or hides, so a click (or the second half of a double-click) meant for the page can't land on it.
 import { short } from '../shared/format.js';
 import { call, keepAlive } from './api.js';
+import { BTC_TITLES, btcAsk, btcBody, btcPreview } from './btc-approve.js';
 import { busyButton, h, mount } from './dom.js';
 import { CHAIN, box, chip, kv, netChip, previewBlock, riskBanner, secretField, spinner, warnings } from './parts.js';
 import './scrollbar.js';
@@ -13,6 +14,7 @@ const ARM_MS = 900;
 const TITLES = {
   connect: 'connect', sign: 'sign', signAndSend: 'sign + send', message: 'sign a message', signIn: 'sign in',
   evmConnect: 'connect', evmMessage: 'sign a message', evmTyped: 'sign typed data', evmTx: 'send a transaction',
+  ...BTC_TITLES,
 };
 const errLine = () => h('div', { class: 'err-line', hidden: true });
 const showErr = (el, e) => { el.textContent = e?.message ?? String(e); el.hidden = false; };
@@ -39,7 +41,7 @@ function siteBox(view) {
     evmMessage: "wants you to sign a message. Signing a message can't move funds by itself, but some apps act on signed messages (orders, logins): read it.",
     evmTyped: 'wants your signature on structured data. Some of these move money without another prompt (permits, marketplace orders): read every line.',
     evmTx: 'wants you to send a transaction from your wallet, which plum signs and sends.',
-  }[view.kind];
+  }[view.kind] ?? (view.chain === 'btc' ? btcAsk(view) : '');
   return box(TITLES[view.kind], { tone: view.risk?.level === 'blocked' ? 'red' : 'ink' },
     h('div', { class: 'site-line' }, h('b', { class: 'host' }, view.host), view.connected ? chip('connected', 'green') : chip('new site', 'hot')),
     view.secure ? null : h('div', { class: 't-gold' }, 'not https: this is your own computer (localhost)'),
@@ -104,14 +106,16 @@ async function render() {
   current = view.id;
   const err = errLine();
   const body = h('div', { class: 'stack' });
-  const connecting = view.kind === 'connect' || view.kind === 'evmConnect';
+  const connecting = view.kind === 'connect' || view.kind === 'evmConnect' || view.kind === 'btcConnect';
   const risky = view.risk?.level === 'blocked' || (view.kind === 'signIn' && view.signIn.problems.length > 0)
     || ((view.kind === 'message' || view.kind === 'evmMessage') && view.message.text == null)
     || (view.kind === 'evmMessage' && view.message.problems?.length > 0)
-    || (view.kind === 'evmTyped' && view.typed.warnings.some((w) => w.level === 'danger'));
+    || (view.kind === 'evmTyped' && view.typed.warnings.some((w) => w.level === 'danger'))
+    || (view.kind === 'btcMessage' && (view.btc.text == null || view.btc.problems?.length > 0));
   let dangers = risky;
   const ack = h('button', { class: 'toggle', 'aria-pressed': 'false' }, view.risk?.level === 'blocked' ? 'i know this site is listed, continue anyway' : 'i understand the risk, approve anyway');
-  const approve = h('button', { class: 'btn-go lg', disabled: true, dataset: { busyText: view.kind === 'signAndSend' || view.kind === 'evmTx' ? 'signing + sending' : 'signing' } }, connecting ? 'connect ->' : 'approve ->');
+  const sends = view.kind === 'signAndSend' || view.kind === 'evmTx' || view.kind === 'btcSend' || (view.kind === 'btcPsbt' && view.btc?.broadcast);
+  const approve = h('button', { class: 'btn-go lg', disabled: true, dataset: { busyText: sends ? 'signing + sending' : 'signing' } }, connecting ? 'connect ->' : 'approve ->');
   const reject = h('button', { class: 'btn no' }, connecting ? 'cancel' : 'reject');
   let armed = false, armedAt = Infinity, pressedAt = -1, acked = false, ready = !view.txCount;
   const sync = () => { approve.disabled = !armed || !ready || (dangers && !acked) || !view.unlocked; };
@@ -162,15 +166,19 @@ async function render() {
   if (view.kind === 'message' || view.kind === 'evmMessage') body.append(messageBody(view));
   if (view.kind === 'signIn') body.append(...signInBody(view));
   if (view.kind === 'evmTyped') body.append(...typedBody(view).filter(Boolean));
-  if (connecting) body.append(h('p', { class: 'fine' }, 'only connect to sites you trust'));
+  if (view.chain === 'btc') body.append(...btcBody(view));
+  else if (connecting) body.append(h('p', { class: 'fine' }, 'only connect to sites you trust'));
   if (view.txCount) {
     body.append(h('div', { class: 'note', 'aria-label': 'simulating' }, spinner()));
     try {
       const previews = await call('approval.preview', { id: view.id });
       if (current !== view.id) return;
-      body.replaceChildren(...previews.map((p, i) => previewBlock(p, { index: i, count: previews.length })));
+      const fixed = view.chain === 'btc' ? btcBody(view) : [];
+      body.replaceChildren(...fixed, ...previews.map((p, i) => (view.chain === 'btc' ? btcPreview(p) : previewBlock(p, { index: i, count: previews.length }))));
       dangers = dangers || previews.some((p) => p.error || p.warnings?.some((w) => w.level === 'danger'));
       if (dangers) { ack.parentElement.hidden = false; }
+      // a Bitcoin request plum refuses (a lie about a coin, an input that isn't yours) can't be approved at all
+      if (view.chain === 'btc' && previews.some((p) => p.error)) { ack.parentElement.hidden = true; sync(); return; }
     } catch (e) {
       body.replaceChildren(h('div', { class: 'note err' }, `plum couldn't simulate this: ${e.message}. Approve only if you trust the site completely.`));
       dangers = true;

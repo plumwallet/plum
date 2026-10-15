@@ -8,6 +8,7 @@ import { short } from '../shared/format.js';
 import { call } from './api.js';
 import { busyButton, h } from './dom.js';
 import { active, ctx, errLine, forget, go, redraw, screen, show, showErr } from './app.js';
+import { taprootLine } from './btc.js';
 import { createWallet, importKey, importPhrase } from './flows.js';
 import { CHAIN, addressBlock, box, chainsOf, chip, iconArt, iconPicker, secretField, seg } from './parts.js';
 
@@ -82,7 +83,7 @@ function walletTools(w, err, again, row) {
   });
   return h('div', { class: 'acct-tools' },
     icons.node,
-    h('div', { class: 'addrs' }, chains.map((c) => h('div', { class: 'addr-line' }, h('span', { class: 'label' }, CHAIN[c].name), addressBlock(w.chains[c].address, { copy: true })))),
+    h('div', { class: 'addrs' }, chains.map((c) => h('div', { class: 'addr-line' }, h('span', { class: 'label' }, CHAIN[c].name), addressBlock(w.chains[c].address, { copy: true }))), taprootLine(w)),
     h('div', { class: 'row' }, name, save),
     h('div', { class: 'stack tight' },
       chains.length > 1 ? seg(chains.map((c) => [c, CHAIN[c].name]), keyChain, (c) => { keyChain = c; drawReveal(); }, { label: 'which key' }) : null,
